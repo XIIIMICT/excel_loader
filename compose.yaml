@@ -1,0 +1,30 @@
+include:
+  - path: ./infra/compose.external-services.yaml
+  - path: ./infra/compose.alloy.yaml
+
+services:
+  loader:
+    container_name: el-loader
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      # Хост PostgreSQL переопределяется переменной POSTGRES_HOST.
+      - type: bind
+        source: ./config.toml
+        target: /app/config.toml
+        read_only: true
+        bind:
+          create_host_path: false
+      - /etc/ssl/certs:/etc/ssl/certs:ro
+      - ./data:/app/data:ro
+      - ./mock_data/pd:/app/mock_data/pd:ro
+      - ./logs:/app/logs
+      - ./unloaded_data:/app/unloaded_data
+    networks: [net]
+    environment:
+      POSTGRES_HOST: ${POSTGRES_HOST:-host.docker.internal}
+
+networks:
+  net:
+    name: el-net

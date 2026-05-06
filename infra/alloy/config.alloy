@@ -1,0 +1,51 @@
+local.file_match "excel_loader_logs" {
+  path_targets = [
+    {
+      "__path__" = "/var/log/excel_loader/*.log",
+      "app"      = "excel_loader",
+      "env"      = "local",
+      "job"      = "excel_loader",
+    },
+  ]
+
+  sync_period = "5s"
+}
+
+loki.source.file "excel_loader_logs" {
+  targets       = local.file_match.excel_loader_logs.targets
+  forward_to    = [loki.process.excel_loader.receiver]
+  tail_from_end = false
+}
+
+loki.process "excel_loader" {
+  stage.json {
+    expressions = {
+      "level"  = "level",
+      "logger" = "logger",
+      "module" = "module",
+      "run_id" = "run_id",
+      "time"   = "timestamp",
+    }
+  }
+
+  stage.labels {
+    values = {
+      "level"  = "",
+      "logger" = "",
+      "module" = "",
+    }
+  }
+
+  stage.timestamp {
+    source = "time"
+    format = "RFC3339Nano"
+  }
+
+  forward_to = [loki.write.default.receiver]
+}
+
+loki.write "default" {
+  endpoint {
+    url = sys.env("LOKI_URL") + "/loki/api/v1/push"
+  }
+}

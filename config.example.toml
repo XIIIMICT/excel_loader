@@ -1,0 +1,73 @@
+[common]
+# Относительные пути считаются от корня проекта.
+log_dir = "logs"
+unloaded_data_dir = "unloaded_data"
+mock_data_dir = "mock_data"
+# Если не указать timezone или поставить null, будет использован системный часовой пояс.
+timezone = "Europe/Moscow"
+
+[common.postgres]
+# Значение host переопределяется переменной окружения POSTGRES_HOST, если она задана.
+host = "localhost"
+port = 5432
+user = "postgres"
+password = "strong_password"
+db = "dwh"
+
+[common.imap]
+# IMAP всегда подключается по SSL.
+host = "imap.example.com"
+port = 993
+user = "dev-mail@ruschem.ru"
+password = "strong_password"
+mailbox = "INBOX"
+# Сканируются только последние N писем.
+scan_depth = 30
+
+[common.smtp]
+# SMTP используется только для уведомлений об ошибках, если модуль включает smtp_error_handling_on.
+host = "smtp.example.com"
+port = 587
+user = "dev-mail@ruschem.ru"
+password = "strong_password"
+from_address = "dev-mail@ruschem.ru"
+
+[nsi]
+schema = "el"
+smtp_error_handling_on = false
+smtp_recipients = ["s.scorpi-on@ya.ru"]
+mviews_to_refresh = []
+users_to_grant = []
+
+[nsi.sources]
+data_dir = "data"
+source = "imap"
+# Имена файлов НСИ, вложенные папки и целевые таблицы задаются явно в registry загрузчиков.
+imap_subject_pattern = "НСИ"
+
+[pd]
+schema = "el"
+smtp_error_handling_on = false
+smtp_recipients = ["s.scorpi-on@ya.ru"]
+mviews_to_refresh = []
+users_to_grant = []
+
+[pd.sources]
+data_dir = "data/pd"
+source = "local"
+file_pattern = ".*\\.xlsx$"
+imap_subject_pattern = "производственная сводка"
+
+[sales_op]
+schema = "el"
+smtp_error_handling_on = false
+smtp_recipients = ["s.scorpi-on@ya.ru"]
+mviews_to_refresh = []
+users_to_grant = []
+
+[sales_op.sources]
+# В этой папке лежат спецификация и месячные подпапки с поклиентными планами.
+data_dir = "data/sales_op"
+source = "local"
+file_pattern = ".*\\.xlsx$"
+imap_subject_pattern = "план продаж"

@@ -1,0 +1,59 @@
+#:schema https://www.schemastore.org/prek.json
+
+orphan = true
+default_stages = ["pre-commit"]
+
+[[repos]]
+repo = "local"
+
+[[repos.hooks]]
+id = "ruff-format"
+name = "ruff format"
+entry = "uv run ruff format"
+language = "system"
+files = '\.py$'
+
+[[repos.hooks]]
+id = "ruff-check"
+name = "ruff check"
+entry = "uv run ruff check"
+language = "system"
+files = '\.py$'
+
+[[repos.hooks]]
+id = "ty-check"
+name = "ty check"
+entry = "uv run ty check"
+language = "system"
+pass_filenames = false
+files = '^(.*\.py|pyproject\.toml)$'
+
+[[repos.hooks]]
+id = "uv-lock"
+name = "uv lock"
+entry = "uv lock"
+language = "system"
+pass_filenames = false
+files = '^pyproject\.toml$'
+
+[[repos]]
+repo = "builtin"
+
+[[repos.hooks]]
+id = "check-added-large-files"
+
+[[repos.hooks]]
+id = "check-merge-conflict"
+
+[[repos.hooks]]
+id = "check-yaml"
+files = '.ya?ml$'
+
+[[repos.hooks]]
+id = "end-of-file-fixer"
+files = '^(\.github/.*|README\.md|LICENSE|justfile|compose\.ya?ml|\.env\.example|\.gitignore)$'
+
+[[repos.hooks]]
+id = "trailing-whitespace"
+files = '^(\.github/.*|README\.md|LICENSE|justfile|compose\.ya?ml|\.env\.example|\.gitignore)$'
+

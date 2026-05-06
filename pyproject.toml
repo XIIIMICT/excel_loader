@@ -1,0 +1,53 @@
+[project]
+name = "excel_loader"
+version = "0.3.2"
+requires-python = ">=3.14"
+dependencies = [
+    "aiosmtplib>=5.1.2",
+    "asyncpg>=0.31.0",
+    "defusedxml>=0.7.1",
+    "openpyxl>=3.1.5",
+    "pandas>=3.0.3",
+    "pydantic>=2.13.4",
+    "pyxlsb>=1.0.10",
+    "sqlalchemy>=2.0.51",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+    "ruff>=0.15.21",
+    "ty>=0.0.59",
+]
+
+[tool.ruff]
+extend-exclude = []
+target-version = "py314"
+line-length = 120
+indent-width = 4
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "COM812",  # Ruff formatter может конфликтовать с этим правилом
+    "D100", "D101", "D102", "D103", "D104", "D105", "D106", "D107",  # Отсутствующие докстринги это норма
+    "D203", "D212", # Конфликтует с D211 и D213, которые являются предпочтительными
+    # "FBT001", "FBT002",  # Логические позиционные аргументы это норма
+    "FIX002",  # Маркеры TODO это норма
+    "RET504",  # Присваивания перед return могут улучшить читаемость кода
+    "RUF001",  # Кириллица это норма
+    "TD002", "TD003",  # Комментарии TODO не требуют имён авторов или ссылок на issues
+    # "TRY003",  # Нет смысла создавать кастомные классы исключений, когда есть подходящие дефолтные
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["PLR2004", "S101"]
+
+[tool.ruff.format]
+line-ending = "lf"
+docstring-code-format = true
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

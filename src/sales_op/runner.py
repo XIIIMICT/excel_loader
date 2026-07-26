@@ -4,8 +4,9 @@ from typing import TYPE_CHECKING
 
 from app_logging import get_logger
 from db import create_postgres_engine
+from dictionary_models import SourceHistoryEntry
 from postgres import inspect_storage, replace_table_rows
-from sales_op.db import create_sales_op_view
+from sales_op.db import create_sales_op_view, drop_sales_op_view
 from sales_op.excel_parser import inspect_sales_op_workbook, parse_sales_op_workbook
 from sales_op.models import (
     SalesOpError,
@@ -14,10 +15,13 @@ from sales_op.models import (
 from sales_op.registry import SOURCE_DEFINITIONS
 from sales_op.specification import SPECIFICATION_FILE_NAME, read_sales_op_specification
 from schema_definition import build_dictionary_table
+from source_history import prepare_source_history
 from source_resolver import SourceError, resolve_all_pattern_sources
 from storage import prepare_storage
 
 if TYPE_CHECKING:
+    from datetime import tzinfo
+
     from sqlalchemy import Table
     from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -62,8 +66,11 @@ async def run_sales_op(settings: Settings) -> SalesOpRunSummary:
             default_file_pattern=DEFAULT_FILE_PATTERN,
             recursive_local=True,
         ) as source_files:
-            selected_files, selection_warnings, inspection_failures = _select_source_files(source_files)
-            rows_by_source, parse_warnings, parse_failures = _parse_selected_files(
+            selected_files, selection_warnings, inspection_failures = _select_source_files(
+                source_files,
+                timezone=settings.app_timezone,
+            )
+            rows_by_source, history_by_source, parse_warnings, parse_failures = _parse_selected_files(
                 selected_files,
                 specification_sources=specification.sources,
             )
@@ -73,11 +80,13 @@ async def run_sales_op(settings: Settings) -> SalesOpRunSummary:
 
     engine = create_postgres_engine(settings)
     try:
+        await drop_sales_op_view(settings, engine=engine)
         loaded_tables, storage_failures = await _replace_tables(
             settings,
             engine=engine,
             specification=specification,
             rows_by_source=rows_by_source,
+            history_by_source=history_by_source,
         )
         view_reference = None
         view_failures = 0
@@ -103,6 +112,8 @@ async def run_sales_op(settings: Settings) -> SalesOpRunSummary:
 
 def _select_source_files(
     source_files: tuple[SourceFile, ...],
+    *,
+    timezone: tzinfo,
 ) -> tuple[tuple[SelectedSalesOpFile, ...], int, int]:
     candidates: dict[str, list[SelectedSalesOpFile]] = defaultdict(list)
     failures = 0
@@ -112,7 +123,7 @@ def _select_source_files(
         if source_code is None:
             continue
         try:
-            plan_date, modified_at = inspect_sales_op_workbook(source_file.path)
+            plan_date, modified_at, metadata = inspect_sales_op_workbook(source_file.path, timezone=timezone)
         except Exception:
             failures += 1
             LOGGER.exception("План продаж: не удалось определить дату файла %s.", source_file.display_name)
@@ -125,6 +136,8 @@ def _select_source_files(
                 original_name=original_name,
                 plan_date=plan_date,
                 modified_at=modified_at,
+                metadata=metadata,
+                history_reference=source_file.history_reference,
             ),
         )
 
@@ -157,8 +170,9 @@ def _parse_selected_files(
     selected_files: tuple[SelectedSalesOpFile, ...],
     *,
     specification_sources: dict[str, SalesOpSourceSpecification],
-) -> tuple[dict[str, list[DbRow]], int, int]:
+) -> tuple[dict[str, list[DbRow]], dict[str, list[SourceHistoryEntry]], int, int]:
     rows_by_source: dict[str, list[DbRow]] = defaultdict(list)
+    history_by_source: dict[str, list[SourceHistoryEntry]] = defaultdict(list)
     warnings = 0
     failures = 0
     for selected_file in selected_files:
@@ -166,12 +180,24 @@ def _parse_selected_files(
             parsed = parse_sales_op_workbook(
                 selected_file.path,
                 source_specification=specification_sources[selected_file.source_code],
+                metadata=selected_file.metadata,
             )
         except Exception:
             failures += 1
             LOGGER.exception("План продаж: файл %s не обработан.", selected_file.display_name)
             continue
         rows_by_source[selected_file.source_code].extend(parsed.rows)
+        definition = next(item for item in SOURCE_DEFINITIONS if item.code == selected_file.source_code)
+        metadata = selected_file.metadata
+        history_by_source[selected_file.source_code].append(
+            SourceHistoryEntry(
+                loaded_at=metadata.loaded_at,
+                src_file=selected_file.history_reference,
+                dest_table=f"{definition.table_name}",
+                file_modified_at=metadata.file_modified_at,
+                file_modifier=metadata.file_modifier,
+            ),
+        )
         warnings += parsed.warning_count
         LOGGER.info(
             "План продаж %s: файл %s распознан: лист=%s, дата=%s, строк=%s.",
@@ -181,7 +207,7 @@ def _parse_selected_files(
             parsed.plan_date,
             len(parsed.rows),
         )
-    return dict(rows_by_source), warnings, failures
+    return dict(rows_by_source), dict(history_by_source), warnings, failures
 
 
 async def _replace_tables(
@@ -190,9 +216,11 @@ async def _replace_tables(
     engine: AsyncEngine,
     specification: SalesOpSpecification,
     rows_by_source: dict[str, list[DbRow]],
+    history_by_source: dict[str, list[SourceHistoryEntry]],
 ) -> tuple[tuple[Table, ...], int]:
     loaded_tables: list[Table] = []
     failures = 0
+    history_table = await prepare_source_history(engine, users_to_grant=settings.sales_op_grant_select_users)
     for definition in SOURCE_DEFINITIONS:
         if definition.code not in rows_by_source:
             continue
@@ -205,7 +233,23 @@ async def _replace_tables(
             storage = await inspect_storage(table, engine=engine)
             if storage.needs_seed:
                 await prepare_storage(table, engine=engine, users_to_grant=settings.sales_op_grant_select_users)
-            inserted = await replace_table_rows(engine, table, rows=rows_by_source[definition.code])
+            entries = tuple(
+                SourceHistoryEntry(
+                    loaded_at=entry.loaded_at,
+                    src_file=entry.src_file,
+                    dest_table=f"{table.schema}.{table.name}",
+                    file_modified_at=entry.file_modified_at,
+                    file_modifier=entry.file_modifier,
+                )
+                for entry in history_by_source.get(definition.code, ())
+            )
+            inserted = await replace_table_rows(
+                engine,
+                table,
+                rows=rows_by_source[definition.code],
+                history_table=history_table,
+                history_entries=entries,
+            )
         except Exception:
             failures += 1
             LOGGER.exception("Не удалось заменить данные таблицы %s.%s.", table.schema, table.name)

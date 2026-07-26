@@ -32,18 +32,31 @@ user = "dev-mail@ruschem.ru"
 password = "strong_password"
 from_address = "dev-mail@ruschem.ru"
 
-[nsi]
+[quotes_nsi]
 schema = "el"
 smtp_error_handling_on = false
 smtp_recipients = ["s.scorpi-on@ya.ru"]
 mviews_to_refresh = []
 users_to_grant = []
 
-[nsi.sources]
+[quotes_nsi.sources]
 data_dir = "data"
 source = "imap"
-# Имена файлов НСИ, вложенные папки и целевые таблицы задаются явно в registry загрузчиков.
+# Имена файлов НСИ котировок и целевые таблицы задаются в quotes_nsi_registry.
 imap_subject_pattern = "НСИ"
+
+[quotes]
+schema = "el"
+smtp_error_handling_on = false
+smtp_recipients = ["s.scorpi-on@ya.ru"]
+mviews_to_refresh = []
+users_to_grant = []
+
+[quotes.sources]
+data_dir = "data"
+source = "local"
+# Имена файлов котировок и целевые таблицы задаются в quotes_registry.
+imap_subject_pattern = "Котировки"
 
 [pd]
 schema = "el"

@@ -9,9 +9,9 @@ type DbRow = dict[str, DbValue]
 
 @dataclass(frozen=True, slots=True)
 class WorkbookMetadata:
-    user_name: str
-    date_modified: datetime
-    date_upload: datetime
+    file_modifier: str
+    file_modified_at: datetime
+    loaded_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,3 +29,12 @@ class DictionaryPayload:
     rows: list[DbRow]
     metadata: WorkbookMetadata
     warning_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class SourceHistoryEntry:
+    loaded_at: datetime
+    src_file: str
+    dest_table: str
+    file_modified_at: datetime
+    file_modifier: str

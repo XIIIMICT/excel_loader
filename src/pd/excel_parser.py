@@ -11,7 +11,7 @@ import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.utils import column_index_from_string, get_column_letter
 
-from pd_loader.models import Asset, Indicator, ParsedReport, RawMaterial
+from pd.models import Asset, Indicator, ParsedReport, RawMaterial
 
 if TYPE_CHECKING:
     from openpyxl.workbook.workbook import Workbook

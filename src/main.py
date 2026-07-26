@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import json
 import logging
 import sys
 from dataclasses import dataclass
@@ -11,10 +12,12 @@ from aiosmtplib.errors import SMTPAuthenticationError
 from app_logging import configure_logging, flush_log_handlers, get_logger
 from config import Settings, load_settings
 from db import create_postgres_engine
+from dictionaries.quotes_nsi_registry import DICTIONARIES as QUOTES_NSI_DICTIONARIES
+from dictionaries.quotes_registry import DICTIONARIES as QUOTES_DICTIONARIES
+from dictionary_runner import DictionaryRunSummary, run_dictionaries
 from email_sender import send_log_email
-from nsi_runner import NsiRunSummary, run_nsi
-from pd_loader.runner import PdRunSummary, run_pd
-from pd_loader.schema import build_pd_tables, pd_view_reference
+from pd.runner import PdRunSummary, run_pd
+from pd.schema import build_pd_tables, pd_view_reference
 from postgres import (
     grant_select_on_relation_to_existing_roles,
     grant_select_on_table_to_existing_roles,
@@ -82,8 +85,10 @@ async def _run_app(settings: Settings, *, args: argparse.Namespace, log_path: Pa
 async def _run_modules(settings: Settings, modules: tuple[str, ...]) -> tuple[ModuleRun, ...]:
     module_runs: list[ModuleRun] = []
     for module in modules:
-        if module == "nsi":
-            module_runs.append(await _run_nsi_module(settings))
+        if module == "quotes_nsi":
+            module_runs.append(await _run_dictionary_module(settings, module_code=module))
+        if module == "quotes":
+            module_runs.append(await _run_dictionary_module(settings, module_code=module))
         if module == "pd":
             module_runs.append(await _run_pd_module(settings))
         if module == "sales_op":
@@ -92,21 +97,30 @@ async def _run_modules(settings: Settings, modules: tuple[str, ...]) -> tuple[Mo
     return tuple(module_runs)
 
 
-async def _run_nsi_module(settings: Settings) -> ModuleRun:
-    summary: NsiRunSummary = await run_nsi(settings)
+async def _run_dictionary_module(settings: Settings, *, module_code: str) -> ModuleRun:
+    is_quotes_nsi = module_code == "quotes_nsi"
+    module_config = settings.quotes_nsi if is_quotes_nsi else settings.quotes
+    summary: DictionaryRunSummary = await run_dictionaries(
+        settings,
+        module_label="НСИ котировок" if is_quotes_nsi else "Котировки",
+        module_config=module_config,
+        dictionary_loaders=QUOTES_NSI_DICTIONARIES if is_quotes_nsi else QUOTES_DICTIONARIES,
+    )
     return ModuleRun(
-        code="nsi",
-        schema_name=settings.nsi_schema,
+        code=module_code,
+        schema_name=module_config.schema_name,
         has_errors=summary.has_errors,
         has_warnings=summary.has_warnings,
         has_format_changes=False,
-        smtp_error_handling_on=settings.nsi.smtp_error_handling_on,
-        smtp_recipients=settings.nsi.smtp_recipients,
-        smtp_subject=settings.nsi_smtp_error_subject,
+        smtp_error_handling_on=module_config.smtp_error_handling_on,
+        smtp_recipients=module_config.smtp_recipients,
+        smtp_subject=(settings.quotes_nsi_smtp_error_subject if is_quotes_nsi else settings.quotes_smtp_error_subject),
         tables_to_grant=summary.loaded_tables,
         relation_references_to_grant=(),
-        materialized_views=settings.nsi_materialized_views,
-        grant_users=settings.nsi_grant_select_users,
+        materialized_views=(
+            settings.quotes_nsi_materialized_views if is_quotes_nsi else settings.quotes_materialized_views
+        ),
+        grant_users=module_config.users_to_grant,
     )
 
 
@@ -285,26 +299,33 @@ async def _refresh_materialized_views_if_needed(module_run: ModuleRun, *, engine
 
 def _selected_modules(args: argparse.Namespace) -> tuple[str, ...]:
     selected_modules: list[str] = []
-    if args.nsi:
-        selected_modules.append("nsi")
+    if args.quotes_nsi:
+        selected_modules.append("quotes_nsi")
+    if args.quotes:
+        selected_modules.append("quotes")
     if args.pd:
         selected_modules.append("pd")
     if args.sales_op:
         selected_modules.append("sales_op")
     if selected_modules:
         return tuple(selected_modules)
-    return "nsi", "pd", "sales_op"
+    return "quotes_nsi", "quotes", "pd", "sales_op"
 
 
 def _apply_cli_overrides(settings: Settings, *, args: argparse.Namespace) -> Settings:
     modules = _selected_modules(args)
-    nsi = settings.nsi
+    quotes_nsi = settings.quotes_nsi
+    quotes = settings.quotes
     pd = settings.pd
     sales_op = settings.sales_op
 
     if args.source is not None:
-        if "nsi" in modules:
-            nsi = nsi.model_copy(update={"sources": nsi.sources.model_copy(update={"source": args.source})})
+        if "quotes_nsi" in modules:
+            quotes_nsi = quotes_nsi.model_copy(
+                update={"sources": quotes_nsi.sources.model_copy(update={"source": args.source})},
+            )
+        if "quotes" in modules:
+            quotes = quotes.model_copy(update={"sources": quotes.sources.model_copy(update={"source": args.source})})
         if "pd" in modules:
             pd = pd.model_copy(update={"sources": pd.sources.model_copy(update={"source": args.source})})
         if "sales_op" in modules:
@@ -312,12 +333,15 @@ def _apply_cli_overrides(settings: Settings, *, args: argparse.Namespace) -> Set
                 update={"sources": sales_op.sources.model_copy(update={"source": args.source})},
             )
 
-    return settings.model_copy(update={"nsi": nsi, "pd": pd, "sales_op": sales_op})
+    return settings.model_copy(
+        update={"quotes_nsi": quotes_nsi, "quotes": quotes, "pd": pd, "sales_op": sales_op},
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Загрузка НСИ, производственной сводки и плана продаж.")
-    parser.add_argument("--nsi", action="store_true", help="Загрузить только НСИ.")
+    parser = argparse.ArgumentParser(description="Загрузка НСИ котировок, котировок, ПД и плана продаж.")
+    parser.add_argument("--quotes-nsi", dest="quotes_nsi", action="store_true", help="Загрузить только НСИ котировок.")
+    parser.add_argument("--quotes", action="store_true", help="Загрузить только котировки.")
     parser.add_argument("--pd", action="store_true", help="Загрузить только производственную сводку.")
     parser.add_argument("--sales-op", dest="sales_op", action="store_true", help="Загрузить только план продаж.")
     parser.add_argument(
@@ -371,7 +395,8 @@ async def _send_log_email(
     subject: str,
 ) -> bool:
     flush_log_handlers()
-    log_content = await asyncio.to_thread(log_path.read_text, encoding="utf-8")
+    full_log_content = await asyncio.to_thread(log_path.read_text, encoding="utf-8")
+    log_content = _filter_email_log_content(full_log_content)
     try:
         await send_log_email(
             settings,
@@ -392,6 +417,18 @@ async def _send_log_email(
         return True
 
     return False
+
+
+def _filter_email_log_content(log_content: str) -> str:
+    selected_lines: list[str] = []
+    for line in log_content.splitlines():
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if payload.get("level") in {"WARNING", "ERROR", "CRITICAL"}:
+            selected_lines.append(line)
+    return "\n".join(selected_lines)
 
 
 if __name__ == "__main__":

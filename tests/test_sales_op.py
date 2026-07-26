@@ -54,6 +54,9 @@ class TestSalesOpSpecification:
         assert "source_type" not in columns
         assert "uom_code" not in columns
         assert "uom_k" not in columns
+        assert "date_upload" in columns
+        assert "date_modified" in columns
+        assert "user_name" not in columns
 
     def test_parses_first_visible_sheet_and_normalizes_values(self) -> None:
         definition = SOURCE_DEFINITIONS_BY_CODE["bsk_polymers"]
@@ -69,3 +72,6 @@ class TestSalesOpSpecification:
 
         assert parsed.warning_count > 0
         assert any(value is None for row in parsed.rows for value in row.values())
+        assert all("date_upload" in row for row in parsed.rows)
+        assert all("date_modified" in row for row in parsed.rows)
+        assert all("user_name" not in row for row in parsed.rows)

@@ -14,12 +14,8 @@ def build_dictionary_table(
 ) -> Table:
     schema_name, table_name = split_table_reference(table_reference)
     metadata = MetaData(schema=schema_name)
-    return Table(
-        table_name,
-        metadata,
-        *(_build_column(column) for column in columns),
-        PrimaryKeyConstraint(*primary_key_columns),
-    )
+    constraints = (PrimaryKeyConstraint(*primary_key_columns),) if primary_key_columns else ()
+    return Table(table_name, metadata, *(_build_column(column) for column in columns), *constraints)
 
 
 def split_table_reference(table_reference: str) -> tuple[str, str]:

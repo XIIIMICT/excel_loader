@@ -14,7 +14,8 @@ SRC_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = SRC_DIR.parent
 CONFIG_PATH = PROJECT_DIR / "config.toml"
 MAX_QUALIFIED_NAME_PARTS = 2
-NSI_SMTP_ERROR_SUBJECT = "НСИ котировок: ошибка загрузки словарей"
+QUOTES_NSI_SMTP_ERROR_SUBJECT = "НСИ котировок: предупреждения и ошибки загрузки"
+QUOTES_SMTP_ERROR_SUBJECT = "Котировки: предупреждения и ошибки загрузки"
 PD_SMTP_ERROR_SUBJECT = "ПД: ошибка загрузки производственной сводки"
 SALES_OP_SMTP_ERROR_SUBJECT = "План продаж: предупреждения и ошибки загрузки"
 
@@ -171,15 +172,7 @@ class ModuleBaseConfig(BaseModel):
         return _normalize_qualified_names(value, setting_name="mviews_to_refresh")
 
 
-class NsiConfig(ModuleBaseConfig):
-    sources: SourcesConfig
-
-
-class PdConfig(ModuleBaseConfig):
-    sources: SourcesConfig
-
-
-class SalesOpConfig(ModuleBaseConfig):
+class ModuleConfig(ModuleBaseConfig):
     sources: SourcesConfig
 
 
@@ -187,9 +180,10 @@ class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     common: CommonConfig = Field(default_factory=CommonConfig)
-    nsi: NsiConfig
-    pd: PdConfig
-    sales_op: SalesOpConfig
+    quotes_nsi: ModuleConfig
+    quotes: ModuleConfig
+    pd: ModuleConfig
+    sales_op: ModuleConfig
 
     @model_validator(mode="after")
     def validate_external_services(self) -> Self:
@@ -255,8 +249,12 @@ class Settings(BaseModel):
         return self.postgres.schema_name
 
     @property
-    def nsi_schema(self) -> str:
-        return self.nsi.schema_name
+    def quotes_nsi_schema(self) -> str:
+        return self.quotes_nsi.schema_name
+
+    @property
+    def quotes_schema(self) -> str:
+        return self.quotes.schema_name
 
     @property
     def pd_schema(self) -> str:
@@ -287,8 +285,12 @@ class Settings(BaseModel):
         return self.smtp.from_address
 
     @property
-    def nsi_smtp_error_subject(self) -> str:
-        return NSI_SMTP_ERROR_SUBJECT
+    def quotes_nsi_smtp_error_subject(self) -> str:
+        return QUOTES_NSI_SMTP_ERROR_SUBJECT
+
+    @property
+    def quotes_smtp_error_subject(self) -> str:
+        return QUOTES_SMTP_ERROR_SUBJECT
 
     @property
     def pd_smtp_error_subject(self) -> str:
@@ -299,12 +301,20 @@ class Settings(BaseModel):
         return SALES_OP_SMTP_ERROR_SUBJECT
 
     @property
-    def nsi_materialized_views(self) -> tuple[str, ...]:
-        return _with_default_schema(self.nsi.mviews_to_refresh, schema_name=self.nsi_schema)
+    def quotes_nsi_materialized_views(self) -> tuple[str, ...]:
+        return _with_default_schema(self.quotes_nsi.mviews_to_refresh, schema_name=self.quotes_nsi_schema)
 
     @property
-    def nsi_grant_select_users(self) -> tuple[str, ...]:
-        return self.nsi.users_to_grant
+    def quotes_nsi_grant_select_users(self) -> tuple[str, ...]:
+        return self.quotes_nsi.users_to_grant
+
+    @property
+    def quotes_materialized_views(self) -> tuple[str, ...]:
+        return _with_default_schema(self.quotes.mviews_to_refresh, schema_name=self.quotes_schema)
+
+    @property
+    def quotes_grant_select_users(self) -> tuple[str, ...]:
+        return self.quotes.users_to_grant
 
     @property
     def pd_materialized_views(self) -> tuple[str, ...]:
@@ -322,8 +332,11 @@ class Settings(BaseModel):
     def sales_op_grant_select_users(self) -> tuple[str, ...]:
         return self.sales_op.users_to_grant
 
-    def nsi_table_schema_reference(self, table_name: str) -> str:
-        return f"{self.nsi_schema}.{table_name}"
+    def quotes_nsi_table_schema_reference(self, table_name: str) -> str:
+        return f"{self.quotes_nsi_schema}.{table_name}"
+
+    def quotes_table_schema_reference(self, table_name: str) -> str:
+        return f"{self.quotes_schema}.{table_name}"
 
     def pd_table_name(self, table_name: str) -> str:
         return table_name
@@ -436,7 +449,8 @@ def _with_default_schema(values: tuple[str, ...], *, schema_name: str) -> tuple[
 
 def _validate_imap_settings(settings: Settings) -> None:
     imap_sources = [
-        ("nsi.sources.imap_subject_pattern", settings.nsi.sources),
+        ("quotes_nsi.sources.imap_subject_pattern", settings.quotes_nsi.sources),
+        ("quotes.sources.imap_subject_pattern", settings.quotes.sources),
         ("pd.sources.imap_subject_pattern", settings.pd.sources),
         ("sales_op.sources.imap_subject_pattern", settings.sales_op.sources),
     ]
@@ -462,7 +476,8 @@ def _validate_imap_settings(settings: Settings) -> None:
 def _validate_smtp_settings(settings: Settings) -> None:
     if not any(
         (
-            settings.nsi.smtp_error_handling_on,
+            settings.quotes_nsi.smtp_error_handling_on,
+            settings.quotes.smtp_error_handling_on,
             settings.pd.smtp_error_handling_on,
             settings.sales_op.smtp_error_handling_on,
         ),

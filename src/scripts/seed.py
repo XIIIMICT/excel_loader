@@ -19,9 +19,9 @@ from sqlalchemy.schema import CreateSchema
 from app_logging import configure_logging, get_logger
 from config import Settings, load_settings
 from db import create_postgres_engine
-from pd_loader.db import load_report_to_db
-from pd_loader.excel_parser import parse_report
-from pd_loader.schema import PdTables, build_pd_tables
+from pd.db import load_report_to_db
+from pd.excel_parser import parse_report
+from pd.schema import PdTables, build_pd_tables
 from postgres import grant_select_on_table_to_existing_roles, grant_usage_on_schema_to_existing_roles
 from schema_definition import quote_identifier
 
@@ -30,7 +30,7 @@ from schema_definition import quote_identifier
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-    from pd_loader.models import Indicator, ParsedReport
+    from pd.models import Indicator, ParsedReport
 
 LOGGER = get_logger("seed")
 SEED_PD_SOURCE_PATH = Path("pd") / "pd.example.xlsx"

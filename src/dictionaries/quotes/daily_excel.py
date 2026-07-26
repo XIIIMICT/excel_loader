@@ -8,17 +8,21 @@ if TYPE_CHECKING:
     from config import Settings
     from dictionary_models import DictionaryPayload
 
-PRIMARY_KEY_COLUMNS = ("frequency_name_id",)
-TABLE_NAME = "nsi_quotes_frequencies"
+SHEET_NAME = "base"
+TABLE_REFERENCE = "raw.quotes_excel_daily"
 
 
 def build_payload(settings: Settings, source_path: Path) -> DictionaryPayload:
-    frame, metadata = read_single_sheet_frame(source_path, timezone=settings.app_timezone)
+    frame, metadata = read_single_sheet_frame(
+        source_path,
+        timezone=settings.app_timezone,
+        sheet_name=SHEET_NAME,
+    )
     return build_dictionary_payload(
-        table_reference=settings.nsi_table_schema_reference(TABLE_NAME),
+        table_reference=TABLE_REFERENCE,
         selected_frame=frame,
-        primary_key_columns=PRIMARY_KEY_COLUMNS,
+        primary_key_columns=(),
+        column_kinds={"date": "date", "price": "float"},
         metadata=metadata,
         source_name=str(source_path),
-        preserve_text_values=True,
     )

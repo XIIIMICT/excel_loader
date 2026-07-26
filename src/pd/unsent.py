@@ -8,7 +8,7 @@ from typing import TypedDict, cast
 
 import pandas as pd
 
-from pd_loader.models import Asset, Indicator, ParsedReport, RawMaterial
+from pd.models import Asset, Indicator, ParsedReport, RawMaterial
 
 MANIFEST_FILE_NAME = "manifest.json"
 ASSETS_FILE_NAME = "assets.json"

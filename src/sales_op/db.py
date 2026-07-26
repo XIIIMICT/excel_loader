@@ -2,6 +2,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import text
 
+from excel_parser import METADATA_COLUMN_DEFINITIONS
 from sales_op.registry import SOURCE_DEFINITIONS
 from schema_definition import quote_identifier
 
@@ -13,6 +14,12 @@ if TYPE_CHECKING:
     from sales_op.models import SalesOpColumnMapping, SalesOpSpecification
 
 VIEW_NAME = "sales_op_raw_view"
+
+
+async def drop_sales_op_view(settings: Settings, *, engine: AsyncEngine) -> None:
+    view_reference = f"{quote_identifier(settings.sales_op_schema)}.{quote_identifier(VIEW_NAME)}"
+    async with engine.begin() as connection:
+        await connection.execute(text(f"DROP VIEW IF EXISTS {view_reference}"))
 
 
 async def create_sales_op_view(
@@ -29,13 +36,19 @@ async def create_sales_op_view(
     view_reference = f"{quote_identifier(settings.sales_op_schema)}.{quote_identifier(VIEW_NAME)}"
     selects = [_source_select(settings, specification, source_code=source_code) for source_code in available_sources]
     async with engine.begin() as connection:
-        await connection.execute(text(f"DROP VIEW IF EXISTS {view_reference}"))
         await connection.execute(text(f"CREATE VIEW {view_reference} AS\n" + "\nUNION ALL\n".join(selects)))
         for column in specification.columns:
             comment = specification.descriptions[column.name]
             await connection.execute(
                 text(
                     f"COMMENT ON COLUMN {view_reference}.{quote_identifier(column.name)} IS {_sql_literal(comment)}",
+                ),
+            )
+        for column in METADATA_COLUMN_DEFINITIONS:
+            await connection.execute(
+                text(
+                    f"COMMENT ON COLUMN {view_reference}.{quote_identifier(column.name)} "
+                    f"IS {_sql_literal(_metadata_column_comment(column.name))}",
                 ),
             )
     return f"{settings.sales_op_schema}.{VIEW_NAME}"
@@ -67,7 +80,11 @@ def _source_select(settings: Settings, specification: SalesOpSpecification, *, s
     source_specification = specification.sources[source_code]
     definition = next(item for item in SOURCE_DEFINITIONS if item.code == source_code)
     table_reference = f"{quote_identifier(settings.sales_op_schema)}.{quote_identifier(definition.table_name)}"
-    projection = ",\n    ".join(_mapping_expression(mapping) for mapping in source_specification.mappings)
+    projection_items = [*(_mapping_expression(mapping) for mapping in source_specification.mappings)]
+    projection_items.extend(
+        f"{quote_identifier(column.name)} AS {quote_identifier(column.name)}" for column in METADATA_COLUMN_DEFINITIONS
+    )
+    projection = ",\n    ".join(projection_items)
     return f"SELECT\n    {projection}\nFROM {table_reference}"
 
 
@@ -101,3 +118,10 @@ def _sql_type(column: ColumnDefinition) -> str:
 
 def _sql_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
+
+
+def _metadata_column_comment(column_name: str) -> str:
+    return {
+        "date_upload": "Дата и время загрузки файла в базу данных.",
+        "date_modified": "Дата и время последнего сохранения файла.",
+    }[column_name]

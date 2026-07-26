@@ -29,9 +29,8 @@ OOXML_NAMESPACES = {
     "dc": "http://purl.org/dc/elements/1.1/",
 }
 METADATA_COLUMN_DEFINITIONS = (
-    ColumnDefinition(name="user_name", kind=TEXT_COLUMN_KIND, nullable=False),
-    ColumnDefinition(name="date_modified", kind=TIMESTAMP_TZ_COLUMN_KIND, nullable=False),
     ColumnDefinition(name="date_upload", kind=TIMESTAMP_TZ_COLUMN_KIND, nullable=False),
+    ColumnDefinition(name="date_modified", kind=TIMESTAMP_TZ_COLUMN_KIND, nullable=False),
 )
 EXCEL_ERROR_VALUES = {"#NULL!", "#DIV/0!", "#VALUE!", "#REF!", "#NAME?", "#NUM!", "#N/A", "#GETTING_DATA"}
 LOGGER = get_logger("excel")
@@ -42,14 +41,14 @@ def read_workbook_metadata(source_path: Path, *, timezone: tzinfo) -> WorkbookMe
         raise SourceFileNotFoundError(source_path)
 
     if source_path.suffix.lower() == XLSB_SUFFIX:
-        user_name = _read_xlsb_user_name(source_path)
+        file_modifier = _read_xlsb_user_name(source_path)
     else:
-        user_name = _read_openpyxl_user_name(source_path)
+        file_modifier = _read_openpyxl_user_name(source_path)
 
     return WorkbookMetadata(
-        user_name=user_name,
-        date_modified=datetime.fromtimestamp(source_path.stat().st_mtime, tz=timezone),
-        date_upload=datetime.now(tz=timezone),
+        file_modifier=file_modifier,
+        file_modified_at=datetime.fromtimestamp(source_path.stat().st_mtime, tz=timezone),
+        loaded_at=datetime.now(tz=timezone),
     )
 
 
@@ -85,11 +84,12 @@ def read_single_sheet_frame(
     source_path: Path,
     *,
     timezone: tzinfo,
+    sheet_name: str | int = 0,
 ) -> tuple[pd.DataFrame, WorkbookMetadata]:
     metadata = read_workbook_metadata(source_path, timezone=timezone)
     frame = pd.read_excel(
         source_path,
-        sheet_name=0,
+        sheet_name=sheet_name,
         keep_default_na=False,
         na_filter=False,
         engine=_excel_engine(source_path),
@@ -164,14 +164,13 @@ def build_dictionary_payload(  # noqa: C901, PLR0913
         if _should_skip_filtered_row(prepared_row, not_null_filtered_columns):
             continue
 
-        prepared_row["user_name"] = metadata.user_name
-        prepared_row["date_modified"] = metadata.date_modified
-        prepared_row["date_upload"] = metadata.date_upload
-        primary_key_value = tuple(prepared_row[column_name] for column_name in primary_key_columns)
-        if primary_key_value in unique_keys:
-            raise DuplicatePrimaryKeyError(primary_key_columns, row_number)
-
-        unique_keys.add(primary_key_value)
+        prepared_row["date_upload"] = metadata.loaded_at
+        prepared_row["date_modified"] = metadata.file_modified_at
+        if primary_key_columns:
+            primary_key_value = tuple(prepared_row[column_name] for column_name in primary_key_columns)
+            if primary_key_value in unique_keys:
+                raise DuplicatePrimaryKeyError(primary_key_columns, row_number)
+            unique_keys.add(primary_key_value)
         rows.append(prepared_row)
 
     columns = _build_column_definitions(

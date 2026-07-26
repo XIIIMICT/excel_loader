@@ -1,11 +1,13 @@
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
+from excel_parser import METADATA_COLUMN_DEFINITIONS
+
 if TYPE_CHECKING:
     from datetime import date, datetime
     from pathlib import Path
 
-    from dictionary_models import ColumnDefinition, DbRow, DbValue
+    from dictionary_models import ColumnDefinition, DbRow, DbValue, WorkbookMetadata
 
 type MappingMode = Literal["constant", "null", "plan_date", "source"]
 
@@ -38,7 +40,8 @@ class SalesOpSourceSpecification:
 
     @property
     def table_columns(self) -> tuple[ColumnDefinition, ...]:
-        return tuple(mapping.column for mapping in self.mappings if mapping.mode in {"source", "plan_date"})
+        source_columns = tuple(mapping.column for mapping in self.mappings if mapping.mode in {"source", "plan_date"})
+        return (*source_columns, *METADATA_COLUMN_DEFINITIONS)
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +59,8 @@ class SelectedSalesOpFile:
     original_name: str
     plan_date: date
     modified_at: datetime
+    metadata: WorkbookMetadata
+    history_reference: str
 
 
 @dataclass(frozen=True, slots=True)

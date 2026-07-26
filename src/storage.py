@@ -33,8 +33,24 @@ async def prepare_storage(
 
 async def align_table_structure(connection: AsyncConnection, table: Table) -> None:
     existing_columns = await _fetch_existing_columns(connection, table)
+    await _drop_retired_file_metadata_columns(connection, table, existing_columns)
     await _ensure_columns(connection, table, existing_columns)
     await _ensure_primary_key(connection, table)
+
+
+async def _drop_retired_file_metadata_columns(
+    connection: AsyncConnection,
+    table: Table,
+    existing_columns: dict[str, dict[str, Any]],
+) -> None:
+    expected_columns = {column.name for column in table.columns}
+    for column_name in ("user_name", "date_modified"):
+        if column_name not in existing_columns or column_name in expected_columns:
+            continue
+        await connection.execute(
+            text(f"ALTER TABLE {qualified_table_name(table)} DROP COLUMN {quote_identifier(column_name)}"),
+        )
+        existing_columns.pop(column_name)
 
 
 async def _ensure_schema_exists(connection: AsyncConnection, table: Table) -> None:

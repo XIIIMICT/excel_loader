@@ -1,6 +1,8 @@
 *
 !/.zed/
 !/.zed/**
+!.github/
+!/.github/**
 !/AGENTS.md
 !/config.example.toml
 !/.env.example

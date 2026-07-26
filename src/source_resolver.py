@@ -22,6 +22,12 @@ class SourceFile:
     display_name: str
     original_name: str | None = None
 
+    @property
+    def history_reference(self) -> str:
+        if self.original_name is not None and self.display_name.startswith("IMAP:"):
+            return f"imap/{self.original_name}"
+        return str(self.path)
+
 
 class SourceError(Exception):
     pass

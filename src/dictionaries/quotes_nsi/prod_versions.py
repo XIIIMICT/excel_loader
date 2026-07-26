@@ -9,7 +9,7 @@ if TYPE_CHECKING:
     from dictionary_models import DictionaryPayload
 
 PRIMARY_KEY_COLUMNS = ("prod_version", "source")
-TABLE_NAME = "nsi_quotes_prod_versions"
+TABLE_NAME = "quotes_nsi_prod_versions"
 
 
 def build_payload(settings: Settings, source_path: Path) -> DictionaryPayload:
@@ -20,7 +20,7 @@ def build_payload(settings: Settings, source_path: Path) -> DictionaryPayload:
         end_column="source",
     )
     return build_dictionary_payload(
-        table_reference=settings.nsi_table_schema_reference(TABLE_NAME),
+        table_reference=settings.quotes_nsi_table_schema_reference(TABLE_NAME),
         selected_frame=selected_frame,
         primary_key_columns=PRIMARY_KEY_COLUMNS,
         column_kinds={"inserted": "datetime"},

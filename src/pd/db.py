@@ -9,7 +9,7 @@ from sqlalchemy import Table, delete, insert, select, text, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.schema import CreateSchema
 
-from pd_loader.schema import PdTables, build_pd_tables, pd_view_reference
+from pd.schema import PdTables, build_pd_tables, pd_view_reference
 from schema_definition import qualified_table_name, quote_identifier
 
 if TYPE_CHECKING:
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
     from config import Settings
-    from pd_loader.models import Asset, Indicator, ParsedReport, RawMaterial
+    from pd.models import Asset, Indicator, ParsedReport, RawMaterial
 
 
 type Record = dict[str, object | None]

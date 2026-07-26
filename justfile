@@ -1,5 +1,7 @@
 set windows-shell := ["powershell.exe", "-Command"]
 
+export UV_SYSTEM_CERTS := "1"
+
 loader *args:
     docker compose run --rm loader {{args}}
 

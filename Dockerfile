@@ -1,8 +1,9 @@
-FROM ghcr.io/astral-sh/uv:python3.14-alpine AS base
+ARG PYTHON_VERSION=3.14
+FROM ghcr.io/astral-sh/uv:python${PYTHON_VERSION}-alpine AS base
 WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 \
     UV_PYTHON_DOWNLOADS=0 \
-    UV_INSECURE_HOST="pypi.org,files.pythonhosted.org" \
+    UV_SYSTEM_CERTS=1 \
     UV_LINK_MODE=copy 
 
 FROM base AS deps
@@ -10,7 +11,7 @@ COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-project
 
-FROM python:3.14-alpine AS prod
+FROM python:${PYTHON_VERSION}-alpine AS prod
 WORKDIR /app
 ENV PYTHONUNBUFFERED=1 \
     PATH="/app/.venv/bin:$PATH"

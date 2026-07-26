@@ -7,16 +7,16 @@ from sqlalchemy.exc import InterfaceError, OperationalError
 
 from app_logging import get_logger
 from db import create_postgres_engine
-from pd_loader.db import PdLoadResult, load_report_to_db
-from pd_loader.excel_parser import parse_report
-from pd_loader.unsent import delete_unloaded_report, load_unloaded_reports, save_unloaded_report
+from pd.db import PdLoadResult, load_report_to_db
+from pd.excel_parser import parse_report
+from pd.unsent import delete_unloaded_report, load_unloaded_reports, save_unloaded_report
 from source_resolver import SourceAuthError, SourceError, SourceFile, resolve_pattern_sources
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncEngine
 
     from config import Settings
-    from pd_loader.models import ParsedReport
+    from pd.models import ParsedReport
 
 LOGGER = get_logger("pd")
 DEFAULT_PD_FILE_PATTERN = r".*\.xlsx$"
@@ -58,8 +58,8 @@ async def run_pd(settings: Settings) -> PdRunSummary:
         except SourceAuthError as error:
             LOGGER.log(logging.ERROR, "PD: файлы не загружены. %s.", error)
             has_errors = True
-        except SourceError as error:
-            _log_exception(f"PD: файлы не загружены. Ошибка источника: {error}.")
+        except SourceError:
+            LOGGER.exception("PD: файлы не загружены из-за ошибки источника.")
             has_errors = True
 
         return PdRunSummary(has_errors=has_errors, has_format_changes=has_format_changes)
@@ -75,10 +75,10 @@ async def _process_source_file(settings: Settings, engine: AsyncEngine, source_f
         report = replace(report, source_name=source_file.display_name)
         _log_report_summary(report.source_name, report)
         return await _load_or_save_report(settings, engine, report)
-    except FileNotFoundError as error:
-        _log_exception(f"PD: файл не загружен. Файл не найден: {error}.")
-    except ValueError as error:
-        _log_exception(f"PD: файл не загружен. Ошибка разбора: {error}.")
+    except FileNotFoundError:
+        LOGGER.exception("PD: файл не загружен, потому что не найден.")
+    except ValueError:
+        LOGGER.exception("PD: файл не загружен из-за ошибки разбора.")
     except Exception:
         LOGGER.exception("PD: файл не загружен. Внутренняя ошибка обработки.")
 
@@ -98,8 +98,9 @@ async def _process_unloaded_reports(settings: Settings, engine: AsyncEngine) -> 
             result = await load_report_to_db(settings, engine, report)
         except Exception as error:
             if _is_database_unavailable(error):
-                _log_exception(
-                    f"PD: база данных недоступна, пакет оставлен в unloaded_data: {package_dir}. Причина: {error}."
+                LOGGER.exception(
+                    "PD: база данных недоступна, пакет оставлен в unloaded_data: %s.",
+                    package_dir,
                 )
                 return PdLoadAttempt(success=False, has_format_changes=has_format_changes)
             LOGGER.exception("PD: отложенный пакет %s не загружен из-за внутренней ошибки.", package_dir)
@@ -127,7 +128,10 @@ async def _load_or_save_report(settings: Settings, engine: AsyncEngine, report: 
             raise
 
         package_dir = save_unloaded_report(settings.unloaded_data_dir, report)
-        _log_exception(f"PD: база данных недоступна, отчет сохранен в unloaded_data: {package_dir}. Причина: {error}.")
+        LOGGER.exception(
+            "PD: база данных недоступна, отчет сохранен в unloaded_data: %s.",
+            package_dir,
+        )
         return PdLoadAttempt(success=False, has_format_changes=False)
 
     _log_format_changes(result)
@@ -167,7 +171,3 @@ def _is_database_unavailable(error: BaseException) -> bool:
     if isinstance(error, (ConnectionError, OSError, InterfaceError, OperationalError)):
         return True
     return any(_is_database_unavailable(item) for item in (error.__cause__, error.__context__) if item is not None)
-
-
-def _log_exception(message: str) -> None:
-    LOGGER.exception(message)

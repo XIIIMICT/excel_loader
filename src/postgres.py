@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncEngine
 
-    from dictionary_models import DbRow
+    from dictionary_models import DbRow, SourceHistoryEntry
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +67,8 @@ async def replace_table_rows(
     table: Table,
     *,
     rows: Sequence[DbRow],
+    history_table: Table | None = None,
+    history_entries: Sequence[SourceHistoryEntry] = (),
 ) -> int:
     try:
         async with engine.begin() as connection:
@@ -75,6 +77,20 @@ async def replace_table_rows(
 
             if rows:
                 await connection.execute(insert(table), list(rows))
+            if history_table is not None and history_entries:
+                await connection.execute(
+                    insert(history_table),
+                    [
+                        {
+                            "loaded_at": entry.loaded_at,
+                            "src_file": entry.src_file,
+                            "dest_table": entry.dest_table,
+                            "file_modified_at": entry.file_modified_at,
+                            "file_modifier": entry.file_modifier,
+                        }
+                        for entry in history_entries
+                    ],
+                )
     except IntegrityError as error:
         primary_key_constraint = table.primary_key.name
         if isinstance(primary_key_constraint, str) and primary_key_constraint in str(error):

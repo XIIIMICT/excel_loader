@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from app_logging import get_logger
+from business_errors import BusinessLoadError
 from db import create_postgres_engine
 from dictionary_models import SourceHistoryEntry
 from postgres import inspect_storage, replace_table_rows
@@ -250,6 +251,16 @@ async def _replace_tables(
                 history_table=history_table,
                 history_entries=entries,
             )
+        except BusinessLoadError as error:
+            failures += 1
+            LOGGER.log(
+                40,
+                "Не удалось заменить данные таблицы %s.%s. Причина: %s.",
+                table.schema,
+                table.name,
+                error.reason,
+            )
+            continue
         except Exception:
             failures += 1
             LOGGER.exception("Не удалось заменить данные таблицы %s.%s.", table.schema, table.name)

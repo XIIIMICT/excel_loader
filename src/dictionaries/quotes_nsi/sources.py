@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 PRIMARY_KEY_COLUMNS = ("source_code",)
 TABLE_NAME = "quotes_nsi_sources"
-COLUMNS = ("source_code", "source_report_name")
+COLUMNS = ("source_code", "source_fullname", "source_shortname")
 
 
 def build_payload(settings: Settings, source_path: Path) -> DictionaryPayload:

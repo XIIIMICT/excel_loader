@@ -2,9 +2,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from sqlalchemy import Table, insert, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
-from business_errors import DuplicatePrimaryKeyError
+from business_errors import DatabaseOperationError, DuplicatePrimaryKeyError
 from schema_definition import primary_key_columns, qualified_table_name, quote_identifier, split_table_reference
 from storage import align_table_structure
 
@@ -95,8 +95,17 @@ async def replace_table_rows(
         primary_key_constraint = table.primary_key.name
         if isinstance(primary_key_constraint, str) and primary_key_constraint in str(error):
             raise DuplicatePrimaryKeyError(primary_key_columns(table)) from error
-
-        raise
+        raise DatabaseOperationError.from_dbapi_error(
+            error,
+            operation="загрузка данных",
+            table_reference=f"{table.schema}.{table.name}",
+        ) from error
+    except DBAPIError as error:
+        raise DatabaseOperationError.from_dbapi_error(
+            error,
+            operation="изменение структуры или загрузка данных",
+            table_reference=f"{table.schema}.{table.name}",
+        ) from error
 
     return len(rows)
 

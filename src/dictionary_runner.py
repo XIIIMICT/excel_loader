@@ -171,9 +171,10 @@ async def _process_combined_loader(  # noqa: PLR0913
     except BusinessLoadError as error:
         LOGGER.log(
             logging.ERROR,
-            "%s: составной справочник %s не обновлён. Причина: %s.",
+            "%s: составной справочник %s не обновлён из файлов %s. Причина: %s.",
             module_label,
             combined_loader.table_name,
+            ", ".join(source_file.display_name for source_file in source_files),
             error.reason,
         )
         return None, False

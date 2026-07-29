@@ -75,6 +75,9 @@ class ParsedReport:
     raw_materials: tuple[RawMaterial, ...]
     indicators: tuple[Indicator, ...]
     data: pd.DataFrame
+    history_reference: str | None = None
+    file_modified_at: datetime | None = None
+    file_modifier: str | None = None
 
     @property
     def assets_frame(self) -> pd.DataFrame:

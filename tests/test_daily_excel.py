@@ -16,8 +16,6 @@ def test_builds_typed_daily_quotes_payload_from_base_sheet() -> None:
         "pub_date": "date",
         "prod_version": "text",
         "avg_price": "float",
-        "date_upload": "timestamp_tz",
-        "date_modified": "timestamp_tz",
     }
     assert payload.rows[0]["pub_date"] == date(2009, 1, 1)
     assert payload.rows[0]["prod_version"] == "Текст"

@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 from aiosmtplib.errors import SMTPAuthenticationError
 
-from app_logging import configure_logging, flush_log_handlers, get_logger
+from app_logging import configure_logging, flush_log_handlers, get_logger, reset_log_module, set_log_module
 from config import Settings, load_settings
 from db import create_postgres_engine
 from dictionaries.quotes_nsi_registry import DICTIONARIES as QUOTES_NSI_DICTIONARIES
@@ -131,14 +131,18 @@ async def _run_common_post_actions(settings: Settings, *, outcome: str) -> bool:
 async def _run_modules(settings: Settings, modules: tuple[str, ...]) -> tuple[ModuleRun, ...]:
     module_runs: list[ModuleRun] = []
     for module in modules:
-        if module == "quotes_nsi":
-            module_runs.append(await _run_dictionary_module(settings, module_code=module))
-        if module == "quotes":
-            module_runs.append(await _run_dictionary_module(settings, module_code=module))
-        if module == "pd":
-            module_runs.append(await _run_pd_module(settings))
-        if module == "sales_op":
-            module_runs.append(await _run_sales_op_module(settings))
+        token = set_log_module(module)
+        try:
+            if module == "quotes_nsi":
+                module_runs.append(await _run_dictionary_module(settings, module_code=module))
+            if module == "quotes":
+                module_runs.append(await _run_dictionary_module(settings, module_code=module))
+            if module == "pd":
+                module_runs.append(await _run_pd_module(settings))
+            if module == "sales_op":
+                module_runs.append(await _run_sales_op_module(settings))
+        finally:
+            reset_log_module(token)
 
     return tuple(module_runs)
 

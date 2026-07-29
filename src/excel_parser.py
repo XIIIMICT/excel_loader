@@ -11,8 +11,10 @@ from openpyxl import load_workbook
 from app_logging import get_logger
 from business_errors import (
     CellTypeConversionError,
+    DuplicateCellValueError,
     DuplicatePrimaryKeyError,
     FileMetadataMissingError,
+    RequiredCellValueError,
     SourceColumnMissingError,
     SourceFileNotFoundError,
 )
@@ -22,17 +24,12 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 TEXT_COLUMN_KIND = "text"
-TIMESTAMP_TZ_COLUMN_KIND = "timestamp_tz"
 XLSB_SUFFIX = ".xlsb"
 OOXML_CORE_PROPERTIES_PATH = "docProps/core.xml"
 OOXML_NAMESPACES = {
     "cp": "http://schemas.openxmlformats.org/package/2006/metadata/core-properties",
     "dc": "http://purl.org/dc/elements/1.1/",
 }
-METADATA_COLUMN_DEFINITIONS = (
-    ColumnDefinition(name="date_upload", kind=TIMESTAMP_TZ_COLUMN_KIND, nullable=False),
-    ColumnDefinition(name="date_modified", kind=TIMESTAMP_TZ_COLUMN_KIND, nullable=False),
-)
 EXCEL_ERROR_VALUES = {"#NULL!", "#DIV/0!", "#VALUE!", "#REF!", "#NAME?", "#NUM!", "#N/A", "#GETTING_DATA"}
 LOGGER = get_logger("excel")
 
@@ -148,6 +145,8 @@ def build_dictionary_payload(  # noqa: C901, PLR0912, PLR0913
     rows: list[DbRow] = []
     warning_count = 0
     unique_keys: set[tuple[object, ...]] = set()
+    unique_values: dict[str, dict[object, str]] = {column_name: {} for column_name in unique_columns}
+    first_required_error: RequiredCellValueError | None = None
     configured_column_kinds = column_kinds or {}
     for row_number, row in enumerate(selected_frame.itertuples(index=False, name=None), start=2):
         raw_row = dict(zip(selected_columns, row, strict=True))
@@ -169,17 +168,31 @@ def build_dictionary_payload(  # noqa: C901, PLR0912, PLR0913
                 preserve_text=preserve_text_values,
                 nullable=nullable,
             )
+            prepared_value = prepared_row[column_name]
+            if not nullable and prepared_value is None and first_required_error is None:
+                first_required_error = RequiredCellValueError(cell_reference, column_name, value)
+            if column_name in unique_values and prepared_value is not None:
+                first_cell_reference = unique_values[column_name].get(prepared_value)
+                if first_cell_reference is not None:
+                    raise DuplicateCellValueError(
+                        column_name,
+                        prepared_value,
+                        cell_reference,
+                        first_cell_reference,
+                    )
+                unique_values[column_name][prepared_value] = cell_reference
         if _should_skip_filtered_row(prepared_row, not_null_filtered_columns):
             continue
 
-        prepared_row["date_upload"] = metadata.loaded_at
-        prepared_row["date_modified"] = metadata.file_modified_at
         if primary_key_columns:
             primary_key_value = tuple(prepared_row[column_name] for column_name in primary_key_columns)
             if primary_key_value in unique_keys:
                 raise DuplicatePrimaryKeyError(primary_key_columns, row_number)
             unique_keys.add(primary_key_value)
         rows.append(prepared_row)
+
+    if first_required_error is not None:
+        raise first_required_error
 
     columns = _build_column_definitions(
         selected_columns=selected_columns,
@@ -231,7 +244,7 @@ def _build_column_definitions(
         )
         for column_name in selected_columns
     )
-    return (*data_columns, *METADATA_COLUMN_DEFINITIONS)
+    return data_columns
 
 
 def _extract_user_name(*, last_modified_by: str | None, creator: str | None) -> str:

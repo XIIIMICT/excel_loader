@@ -103,8 +103,6 @@ def parse_sales_op_workbook(
                 row_number=row_number,
                 context=_RowContext(source_specification.mappings, bound_columns, plan_date, str(source_path)),
             )
-            prepared_row["date_upload"] = workbook_metadata.loaded_at
-            prepared_row["date_modified"] = workbook_metadata.file_modified_at
             warning_count += row_warning_count
             if prepared_row.get(PRODUCER_TARGET) is None or prepared_row.get(SELLER_TARGET) is None:
                 continue

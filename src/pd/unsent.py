@@ -57,6 +57,9 @@ def save_unloaded_report(unloaded_data_dir: Path, report: ParsedReport) -> Path:
             "source_name": report.source_name,
             "report_date": report.report_date,
             "loaded_at": report.loaded_at,
+            "history_reference": report.history_reference,
+            "file_modified_at": report.file_modified_at,
+            "file_modifier": report.file_modifier,
         },
     )
     _write_json(package_dir / ASSETS_FILE_NAME, [asdict(asset) for asset in report.assets])
@@ -96,7 +99,22 @@ def _load_unloaded_report(package_dir: Path) -> ParsedReport:
         raw_materials=tuple(RawMaterial(**record) for record in raw_materials),
         indicators=tuple(Indicator(**record) for record in indicators),
         data=data,
+        history_reference=_optional_string(manifest.get("history_reference")),
+        file_modified_at=_optional_datetime(manifest.get("file_modified_at")),
+        file_modifier=_optional_string(manifest.get("file_modifier")),
     )
+
+
+def _optional_string(value: JsonValue | None) -> str | None:
+    return str(value) if value is not None else None
+
+
+def _optional_datetime(value: JsonValue | None) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    return datetime.fromisoformat(str(value))
 
 
 def _write_json(path: Path, value: object) -> None:

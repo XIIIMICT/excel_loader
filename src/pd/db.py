@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
     from config import Settings
+    from dictionary_models import SourceHistoryEntry
     from pd.models import Asset, Indicator, ParsedReport, RawMaterial
 
 
@@ -56,7 +57,14 @@ class ViewBuildResult:
     error_message: str | None
 
 
-async def load_report_to_db(settings: Settings, engine: AsyncEngine, report: ParsedReport) -> PdLoadResult:
+async def load_report_to_db(
+    settings: Settings,
+    engine: AsyncEngine,
+    report: ParsedReport,
+    *,
+    history_table: Table | None = None,
+    history_entry: SourceHistoryEntry | None = None,
+) -> PdLoadResult:
     tables = build_pd_tables(settings)
     async with engine.begin() as connection:
         await _ensure_pd_storage(connection, tables, role_names=settings.pd_grant_select_users)
@@ -73,6 +81,16 @@ async def load_report_to_db(settings: Settings, engine: AsyncEngine, report: Par
                 ),
             )
         await _insert_change_log(connection, tables, changes, report=report)
+        if history_table is not None and history_entry is not None:
+            await connection.execute(
+                insert(history_table).values(
+                    loaded_at=history_entry.loaded_at,
+                    src_file=history_entry.src_file,
+                    dest_table=history_entry.dest_table,
+                    file_modified_at=history_entry.file_modified_at,
+                    file_modifier=history_entry.file_modifier,
+                ),
+            )
         await _grant_select_on_relation(
             connection,
             view_result.view_name,

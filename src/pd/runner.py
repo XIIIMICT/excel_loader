@@ -7,12 +7,16 @@ from sqlalchemy.exc import InterfaceError, OperationalError
 
 from app_logging import get_logger
 from db import create_postgres_engine
+from dictionary_models import SourceHistoryEntry
+from excel_parser import read_workbook_metadata
 from pd.db import PdLoadResult, load_report_to_db
 from pd.excel_parser import parse_report
 from pd.unsent import delete_unloaded_report, load_unloaded_reports, save_unloaded_report
+from source_history import prepare_source_history
 from source_resolver import SourceAuthError, SourceError, SourceFile, resolve_pattern_sources
 
 if TYPE_CHECKING:
+    from sqlalchemy import Table
     from sqlalchemy.ext.asyncio import AsyncEngine
 
     from config import Settings
@@ -37,7 +41,8 @@ class PdLoadAttempt:
 async def run_pd(settings: Settings) -> PdRunSummary:
     engine = create_postgres_engine(settings)
     try:
-        unloaded_result = await _process_unloaded_reports(settings, engine)
+        history_table = await prepare_source_history(engine, users_to_grant=settings.pd_grant_select_users)
+        unloaded_result = await _process_unloaded_reports(settings, engine, history_table=history_table)
         has_errors = not unloaded_result.success
         has_format_changes = unloaded_result.has_format_changes
         if has_errors:
@@ -52,7 +57,7 @@ async def run_pd(settings: Settings) -> PdRunSummary:
             ) as source_files:
                 LOGGER.info("PD: найдено файлов по шаблону: %s.", len(source_files))
                 for source_file in source_files:
-                    attempt = await _process_source_file(settings, engine, source_file)
+                    attempt = await _process_source_file(settings, engine, source_file, history_table=history_table)
                     has_errors = has_errors or not attempt.success
                     has_format_changes = has_format_changes or attempt.has_format_changes
         except SourceAuthError as error:
@@ -67,14 +72,27 @@ async def run_pd(settings: Settings) -> PdRunSummary:
         await engine.dispose()
 
 
-async def _process_source_file(settings: Settings, engine: AsyncEngine, source_file: SourceFile) -> PdLoadAttempt:
+async def _process_source_file(
+    settings: Settings,
+    engine: AsyncEngine,
+    source_file: SourceFile,
+    *,
+    history_table: Table,
+) -> PdLoadAttempt:
     loaded_at = datetime.now(tz=settings.app_timezone)
     try:
         LOGGER.info("PD: выбран источник %s.", source_file.display_name)
         report = parse_report(source_file.path, loaded_at=loaded_at)
-        report = replace(report, source_name=source_file.display_name)
+        metadata = read_workbook_metadata(source_file.path, timezone=settings.app_timezone)
+        report = replace(
+            report,
+            source_name=source_file.display_name,
+            history_reference=source_file.history_reference,
+            file_modified_at=metadata.file_modified_at,
+            file_modifier=metadata.file_modifier,
+        )
         _log_report_summary(report.source_name, report)
-        return await _load_or_save_report(settings, engine, report)
+        return await _load_or_save_report(settings, engine, report, history_table=history_table)
     except FileNotFoundError:
         LOGGER.exception("PD: файл не загружен, потому что не найден.")
     except ValueError:
@@ -85,7 +103,12 @@ async def _process_source_file(settings: Settings, engine: AsyncEngine, source_f
     return PdLoadAttempt(success=False, has_format_changes=False)
 
 
-async def _process_unloaded_reports(settings: Settings, engine: AsyncEngine) -> PdLoadAttempt:
+async def _process_unloaded_reports(
+    settings: Settings,
+    engine: AsyncEngine,
+    *,
+    history_table: Table,
+) -> PdLoadAttempt:
     unloaded_reports = load_unloaded_reports(settings.unloaded_data_dir)
     if not unloaded_reports:
         return PdLoadAttempt(success=True, has_format_changes=False)
@@ -95,7 +118,13 @@ async def _process_unloaded_reports(settings: Settings, engine: AsyncEngine) -> 
     for package_dir, report in unloaded_reports:
         try:
             _log_report_summary(f"unloaded:{package_dir.name}", report)
-            result = await load_report_to_db(settings, engine, report)
+            result = await load_report_to_db(
+                settings,
+                engine,
+                report,
+                history_table=history_table,
+                history_entry=_source_history_entry(settings, report),
+            )
         except Exception as error:
             if _is_database_unavailable(error):
                 LOGGER.exception(
@@ -120,9 +149,21 @@ async def _process_unloaded_reports(settings: Settings, engine: AsyncEngine) -> 
     return PdLoadAttempt(success=True, has_format_changes=has_format_changes)
 
 
-async def _load_or_save_report(settings: Settings, engine: AsyncEngine, report: ParsedReport) -> PdLoadAttempt:
+async def _load_or_save_report(
+    settings: Settings,
+    engine: AsyncEngine,
+    report: ParsedReport,
+    *,
+    history_table: Table,
+) -> PdLoadAttempt:
     try:
-        result = await load_report_to_db(settings, engine, report)
+        result = await load_report_to_db(
+            settings,
+            engine,
+            report,
+            history_table=history_table,
+            history_entry=_source_history_entry(settings, report),
+        )
     except Exception as error:
         if not _is_database_unavailable(error):
             raise
@@ -142,6 +183,19 @@ async def _load_or_save_report(settings: Settings, engine: AsyncEngine, report: 
         result.inserted_rows,
     )
     return PdLoadAttempt(success=True, has_format_changes=result.has_format_changes)
+
+
+def _source_history_entry(settings: Settings, report: ParsedReport) -> SourceHistoryEntry | None:
+    if report.history_reference is None or report.file_modified_at is None or report.file_modifier is None:
+        LOGGER.warning("PD: для старого отложенного пакета недоступны метаданные истории источника.")
+        return None
+    return SourceHistoryEntry(
+        loaded_at=report.loaded_at,
+        src_file=report.history_reference,
+        dest_table=settings.pd_table_schema_reference("pd_data"),
+        file_modified_at=report.file_modified_at,
+        file_modifier=report.file_modifier,
+    )
 
 
 def _log_report_summary(source_name: str, report: ParsedReport) -> None:

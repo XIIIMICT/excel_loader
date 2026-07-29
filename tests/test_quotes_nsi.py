@@ -54,8 +54,10 @@ def test_sources_are_normalized_and_have_database_constraints() -> None:
     assert payload.primary_key_columns == ("source_code",)
     assert columns["source_code"].nullable is False
     assert columns["source_code"].unique is True
-    assert columns["source_report_name"].nullable is False
-    assert columns["source_report_name"].unique is True
+    assert columns["source_fullname"].nullable is False
+    assert columns["source_fullname"].unique is True
+    assert columns["source_shortname"].nullable is False
+    assert columns["source_shortname"].unique is True
     assert all(
         value == " ".join(value.split()) for row in payload.rows for value in row.values() if isinstance(value, str)
     )

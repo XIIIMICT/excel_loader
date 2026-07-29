@@ -1,8 +1,10 @@
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import Column, Table, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.schema import CreateSchema
 
+from business_errors import DatabaseOperationError
 from schema_definition import (
     column_cast_expression,
     column_ddl_type,
@@ -24,28 +26,38 @@ async def prepare_storage(
     engine: AsyncEngine,
     users_to_grant: tuple[str, ...] = (),
 ) -> None:
-    async with engine.begin() as connection:
-        await _ensure_schema_exists(connection, table)
-        await _grant_usage_on_schema(connection, table.schema or "public", users_to_grant)
-        await _ensure_table_exists(connection, table)
-        await _grant_select_on_table(connection, table, users_to_grant)
+    try:
+        async with engine.begin() as connection:
+            await _ensure_schema_exists(connection, table)
+            await _grant_usage_on_schema(connection, table.schema or "public", users_to_grant)
+            await _ensure_table_exists(connection, table)
+            await _grant_select_on_table(connection, table, users_to_grant)
+    except DBAPIError as error:
+        raise DatabaseOperationError.from_dbapi_error(
+            error,
+            operation="подготовка хранилища",
+            table_reference=f"{table.schema}.{table.name}",
+        ) from error
 
 
 async def align_table_structure(connection: AsyncConnection, table: Table) -> None:
     existing_columns = await _fetch_existing_columns(connection, table)
-    await _drop_retired_file_metadata_columns(connection, table, existing_columns)
+    await _drop_retired_columns(connection, table, existing_columns)
     await _ensure_columns(connection, table, existing_columns)
     await _ensure_primary_key(connection, table)
     await _ensure_unique_constraints(connection, table)
 
 
-async def _drop_retired_file_metadata_columns(
+async def _drop_retired_columns(
     connection: AsyncConnection,
     table: Table,
     existing_columns: dict[str, dict[str, Any]],
 ) -> None:
     expected_columns = {column.name for column in table.columns}
-    for column_name in ("user_name", "date_modified"):
+    retired_columns = {"user_name", "date_upload", "date_modified"}
+    if table.name == "quotes_nsi_sources" and {"source_fullname", "source_shortname"} <= expected_columns:
+        retired_columns.add("source_report_name")
+    for column_name in retired_columns:
         if column_name not in existing_columns or column_name in expected_columns:
             continue
         await connection.execute(
@@ -144,7 +156,7 @@ async def _ensure_primary_key(connection: AsyncConnection, table: Table) -> None
         if primary_key_row is None:
             return
         msg = f"У таблицы {table.schema}.{table.name} есть первичный ключ, хотя он не ожидался."
-        raise ValueError(msg)
+        raise DatabaseOperationError(msg)
 
     quoted_primary_key_columns = ", ".join(
         quote_identifier(column_name) for column_name in expected_primary_key_columns
@@ -166,7 +178,7 @@ async def _ensure_primary_key(connection: AsyncConnection, table: Table) -> None
             f"У таблицы {table.schema}.{table.name} уже есть первичный ключ по {current_primary_key_columns!r}, "
             f"ожидался {expected_primary_key_columns!r}."
         )
-        raise ValueError(msg)
+        raise DatabaseOperationError(msg)
 
 
 async def _fetch_existing_columns(connection: AsyncConnection, table: Table) -> dict[str, dict[str, Any]]:

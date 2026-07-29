@@ -1,5 +1,6 @@
 import json
 import logging
+from contextvars import ContextVar, Token
 from datetime import datetime, tzinfo
 from typing import TYPE_CHECKING
 
@@ -9,6 +10,7 @@ if TYPE_CHECKING:
     from config import Settings
 
 LOGGER_ROOT = "excel_loader"
+CURRENT_MODULE: ContextVar[str | None] = ContextVar("excel_loader_module", default=None)
 
 
 class JsonFormatter(logging.Formatter):
@@ -26,7 +28,7 @@ class JsonFormatter(logging.Formatter):
             "timestamp": self.formatTime(record),
             "level": record.levelname,
             "logger": record.name,
-            "module": _module_from_logger(record.name),
+            "module": CURRENT_MODULE.get() or _module_from_logger(record.name),
             "message": record.getMessage(),
             "run_id": self.run_id,
         }
@@ -73,6 +75,14 @@ def flush_log_handlers() -> None:
     logger = logging.getLogger(LOGGER_ROOT)
     for handler in logger.handlers:
         handler.flush()
+
+
+def set_log_module(module: str) -> Token[str | None]:
+    return CURRENT_MODULE.set(module)
+
+
+def reset_log_module(token: Token[str | None]) -> None:
+    CURRENT_MODULE.reset(token)
 
 
 def _module_from_logger(logger_name: str) -> str:

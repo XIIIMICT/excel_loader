@@ -1,8 +1,6 @@
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
-from excel_parser import METADATA_COLUMN_DEFINITIONS
-
 if TYPE_CHECKING:
     from datetime import date, datetime
     from pathlib import Path
@@ -40,8 +38,7 @@ class SalesOpSourceSpecification:
 
     @property
     def table_columns(self) -> tuple[ColumnDefinition, ...]:
-        source_columns = tuple(mapping.column for mapping in self.mappings if mapping.mode in {"source", "plan_date"})
-        return (*source_columns, *METADATA_COLUMN_DEFINITIONS)
+        return tuple(mapping.column for mapping in self.mappings if mapping.mode in {"source", "plan_date"})
 
 
 @dataclass(frozen=True, slots=True)

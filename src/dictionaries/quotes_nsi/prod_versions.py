@@ -8,7 +8,7 @@ if TYPE_CHECKING:
     from config import Settings
     from dictionary_models import DictionaryPayload
 
-PRIMARY_KEY_COLUMNS = ("prod_version", "source")
+PRIMARY_KEY_COLUMNS = ("prod_version", "source_code")
 TABLE_NAME = "quotes_nsi_prod_versions"
 
 
@@ -17,13 +17,14 @@ def build_payload(settings: Settings, source_path: Path) -> DictionaryPayload:
     selected_frame = select_columns_between(
         frame,
         start_column="prod_version",
-        end_column="source",
+        end_column="source_code",
     )
     return build_dictionary_payload(
         table_reference=settings.quotes_nsi_table_schema_reference(TABLE_NAME),
         selected_frame=selected_frame,
         primary_key_columns=PRIMARY_KEY_COLUMNS,
-        column_kinds={"inserted": "datetime"},
+        column_kinds={"inserted": "datetime", "is_top_raw_quotes": "bool"},
+        not_null_columns=("is_top_raw_quotes",),
         metadata=metadata,
         source_name=str(source_path),
     )

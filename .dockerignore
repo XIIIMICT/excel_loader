@@ -1,5 +1,7 @@
 *
 !/src/
 !/src/**/*.py
+!/sql/
+!/sql/**/*.sql
 !/pyproject.toml
 !/uv.lock

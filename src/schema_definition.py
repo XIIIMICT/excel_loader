@@ -1,6 +1,18 @@
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import TIMESTAMP, Column, Date, DateTime, Float, Integer, MetaData, PrimaryKeyConstraint, Table, Text
+from sqlalchemy import (
+    TIMESTAMP,
+    Boolean,
+    Column,
+    Date,
+    DateTime,
+    Float,
+    Integer,
+    MetaData,
+    PrimaryKeyConstraint,
+    Table,
+    Text,
+)
 
 if TYPE_CHECKING:
     from dictionary_models import ColumnDefinition
@@ -57,9 +69,11 @@ def column_cast_expression(column: Column[Any]) -> str:
     return f"{quote_identifier(column.name)}::{column_ddl_type(column)}"
 
 
-def _build_column(column: ColumnDefinition) -> Column[Any]:
+def _build_column(column: ColumnDefinition) -> Column[Any]:  # noqa: PLR0911
     if column.kind == "text":
-        return _text_column(column.name, nullable=column.nullable)
+        return _text_column(column.name, nullable=column.nullable, unique=column.unique)
+    if column.kind == "bool":
+        return _boolean_column(column.name, nullable=column.nullable, unique=column.unique)
     if column.kind == "date":
         return _date_column(column.name, nullable=column.nullable)
     if column.kind == "datetime":
@@ -72,15 +86,35 @@ def _build_column(column: ColumnDefinition) -> Column[Any]:
     return _timestamp_tz_column(column.name, nullable=column.nullable)
 
 
-def _text_column(name: str, *, nullable: bool) -> Column[Any]:
+def _text_column(name: str, *, nullable: bool, unique: bool = False) -> Column[Any]:
     return Column(
         name,
         Text,
         nullable=nullable,
+        unique=unique,
         info={
             "cast_expression": f"{quote_identifier(name)}::TEXT",
             "ddl_type": "TEXT",
             "information_schema_type": "text",
+        },
+    )
+
+
+def _boolean_column(name: str, *, nullable: bool, unique: bool = False) -> Column[Any]:
+    empty_value = "NULL" if nullable else "FALSE"
+    return Column(
+        name,
+        Boolean,
+        nullable=nullable,
+        unique=unique,
+        info={
+            "cast_expression": (
+                f"CASE WHEN {quote_identifier(name)} IS NULL OR BTRIM({quote_identifier(name)}::TEXT) = '' "
+                f"THEN {empty_value} WHEN LOWER(BTRIM({quote_identifier(name)}::TEXT)) = 'false' THEN FALSE "
+                "ELSE TRUE END"
+            ),
+            "ddl_type": "BOOLEAN",
+            "information_schema_type": "boolean",
         },
     )
 

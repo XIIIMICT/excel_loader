@@ -1,5 +1,6 @@
 import re
 from datetime import date, datetime, time, tzinfo
+from numbers import Number
 from typing import TYPE_CHECKING, Literal
 from zipfile import BadZipFile, ZipFile
 
@@ -120,13 +121,15 @@ def select_columns_excluding_checks(frame: pd.DataFrame) -> pd.DataFrame:
     return frame.loc[:, selected_headers].copy()
 
 
-def build_dictionary_payload(  # noqa: C901, PLR0913
+def build_dictionary_payload(  # noqa: C901, PLR0912, PLR0913
     *,
     table_reference: str,
     selected_frame: pd.DataFrame,
     primary_key_columns: tuple[str, ...],
     metadata: WorkbookMetadata,
     not_null_filtered_columns: tuple[str, ...] = (),
+    not_null_columns: tuple[str, ...] = (),
+    unique_columns: tuple[str, ...] = (),
     column_kinds: dict[str, ColumnKind] | None = None,
     source_name: str | None = None,
     preserve_text_values: bool = False,
@@ -138,6 +141,9 @@ def build_dictionary_payload(  # noqa: C901, PLR0913
     for filtered_column in not_null_filtered_columns:
         if filtered_column not in selected_columns:
             raise SourceColumnMissingError(filtered_column)
+    for configured_column in (*not_null_columns, *unique_columns):
+        if configured_column not in selected_columns:
+            raise SourceColumnMissingError(configured_column)
 
     rows: list[DbRow] = []
     warning_count = 0
@@ -150,6 +156,7 @@ def build_dictionary_payload(  # noqa: C901, PLR0913
         prepared_row: DbRow = {}
         for column_index, (column_name, value) in enumerate(zip(selected_columns, row, strict=True), start=1):
             kind = configured_column_kinds.get(column_name, TEXT_COLUMN_KIND)
+            nullable = column_name not in primary_key_columns and column_name not in not_null_columns
             cell_reference = f"{_excel_column_name(column_index)}{row_number}"
             if _is_excel_error(value):
                 warning_count += 1
@@ -160,6 +167,7 @@ def build_dictionary_payload(  # noqa: C901, PLR0913
                 excel_errors_as_null=True,
                 source_name=source_name,
                 preserve_text=preserve_text_values,
+                nullable=nullable,
             )
         if _should_skip_filtered_row(prepared_row, not_null_filtered_columns):
             continue
@@ -177,6 +185,8 @@ def build_dictionary_payload(  # noqa: C901, PLR0913
         selected_columns=selected_columns,
         primary_key_columns=primary_key_columns,
         column_kinds=configured_column_kinds,
+        not_null_columns=not_null_columns,
+        unique_columns=unique_columns,
     )
     return DictionaryPayload(
         table_reference=table_reference,
@@ -209,12 +219,15 @@ def _build_column_definitions(
     selected_columns: tuple[str, ...],
     primary_key_columns: tuple[str, ...],
     column_kinds: dict[str, ColumnKind],
+    not_null_columns: tuple[str, ...],
+    unique_columns: tuple[str, ...],
 ) -> tuple[ColumnDefinition, ...]:
     data_columns = tuple(
         ColumnDefinition(
             name=column_name,
             kind=column_kinds.get(column_name, TEXT_COLUMN_KIND),
-            nullable=column_name not in primary_key_columns,
+            nullable=column_name not in primary_key_columns and column_name not in not_null_columns,
+            unique=column_name in unique_columns,
         )
         for column_name in selected_columns
     )
@@ -246,6 +259,7 @@ def convert_excel_value(  # noqa: PLR0913
     excel_errors_as_null: bool = False,
     source_name: str | None = None,
     preserve_text: bool = False,
+    nullable: bool = True,
 ) -> DbValue:
     excel_error_result = _excel_error_as_null(
         value,
@@ -257,6 +271,8 @@ def convert_excel_value(  # noqa: PLR0913
         return None
     if preserve_text and kind == "text":
         return _preserve_text_value(value)
+    if kind == "bool":
+        return _convert_boolean_value(value, nullable=nullable)
     normalized = normalize_text_value(value)
     if normalized is None:
         return None
@@ -289,6 +305,20 @@ def _convert_normalized_value(
         raise CellTypeConversionError(cell_reference, kind, value) from error
     else:
         return result
+
+
+def _convert_boolean_value(value: object, *, nullable: bool) -> bool | None:
+    if value is None or pd.isna(value):
+        return None if nullable else False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, Number):
+        return value != 0
+
+    normalized = str(value).strip().lower()
+    if not normalized:
+        return None if nullable else False
+    return normalized != "false"
 
 
 def _excel_error_as_null(

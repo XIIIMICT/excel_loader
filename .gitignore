@@ -22,6 +22,8 @@
 !/pyproject.toml
 !/uv.lock
 !/justfile
+!/sql/
+!/sql/**
 !/data/
 !/mock_data/
 !/mock_data/**

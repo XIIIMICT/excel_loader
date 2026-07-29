@@ -13,6 +13,7 @@ from app_logging import configure_logging, flush_log_handlers, get_logger
 from config import Settings, load_settings
 from db import create_postgres_engine
 from dictionaries.quotes_nsi_registry import DICTIONARIES as QUOTES_NSI_DICTIONARIES
+from dictionaries.quotes_registry import COMBINED_DICTIONARIES as QUOTES_COMBINED_DICTIONARIES
 from dictionaries.quotes_registry import DICTIONARIES as QUOTES_DICTIONARIES
 from dictionary_runner import DictionaryRunSummary, run_dictionaries
 from email_sender import send_log_email
@@ -67,19 +68,64 @@ def main() -> int:
 async def _run_app(settings: Settings, *, args: argparse.Namespace, log_path: Path) -> int:
     module_runs = await _run_modules(settings, _selected_modules(args))
     post_action_failed_modules = await _run_post_actions(settings, module_runs)
+    outcome = _module_run_outcome(module_runs, post_action_failed_modules=post_action_failed_modules)
+    common_post_action_failed = await _run_common_post_actions(settings, outcome=outcome)
     email_failed = await _send_error_emails(
         settings,
         module_runs=module_runs,
         post_action_failed_modules=post_action_failed_modules,
         log_path=log_path,
+        common_post_action_failed=common_post_action_failed,
     )
     return (
         1
         if email_failed
+        or common_post_action_failed
         or post_action_failed_modules
         or any(module_run.has_errors or module_run.has_format_changes for module_run in module_runs)
         else 0
     )
+
+
+def _module_run_outcome(
+    module_runs: tuple[ModuleRun, ...],
+    *,
+    post_action_failed_modules: tuple[str, ...],
+) -> str:
+    failed_modules = {
+        module_run.code for module_run in module_runs if module_run.has_errors or module_run.has_format_changes
+    }
+    failed_modules.update(post_action_failed_modules)
+    if not failed_modules:
+        return "success"
+    if len(failed_modules) < len(module_runs):
+        return "partial_success"
+    return "failure"
+
+
+async def _run_common_post_actions(settings: Settings, *, outcome: str) -> bool:
+    selected_actions = [
+        action for action in settings.common.post_actions if "always" in action.run_on or outcome in action.run_on
+    ]
+    if not selected_actions:
+        return False
+
+    engine = create_postgres_engine(settings)
+    has_errors = False
+    try:
+        for action in selected_actions:
+            try:
+                sql = await asyncio.to_thread(action.path.read_text, encoding="utf-8")
+                async with engine.begin() as connection:
+                    await connection.exec_driver_sql(sql)
+            except Exception:
+                LOGGER.exception("Не удалось выполнить общее пост-действие %s.", action.path)
+                has_errors = True
+                continue
+            LOGGER.info("Общее пост-действие %s выполнено для состояния %s.", action.path, outcome)
+    finally:
+        await engine.dispose()
+    return has_errors
 
 
 async def _run_modules(settings: Settings, modules: tuple[str, ...]) -> tuple[ModuleRun, ...]:
@@ -105,6 +151,7 @@ async def _run_dictionary_module(settings: Settings, *, module_code: str) -> Mod
         module_label="НСИ котировок" if is_quotes_nsi else "Котировки",
         module_config=module_config,
         dictionary_loaders=QUOTES_NSI_DICTIONARIES if is_quotes_nsi else QUOTES_DICTIONARIES,
+        combined_loaders=() if is_quotes_nsi else QUOTES_COMBINED_DICTIONARIES,
     )
     return ModuleRun(
         code=module_code,
@@ -358,6 +405,7 @@ async def _send_error_emails(
     module_runs: tuple[ModuleRun, ...],
     post_action_failed_modules: tuple[str, ...],
     log_path: Path,
+    common_post_action_failed: bool,
 ) -> bool:
     email_failed = False
     post_action_failed_module_set = set(post_action_failed_modules)
@@ -367,6 +415,7 @@ async def _send_error_emails(
             or module_run.has_warnings
             or module_run.has_format_changes
             or module_run.code in post_action_failed_module_set
+            or common_post_action_failed
         )
         if not should_send or not module_run.smtp_error_handling_on:
             continue

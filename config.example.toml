@@ -6,6 +6,11 @@ mock_data_dir = "mock_data"
 # Если не указать timezone или поставить null, будет использован системный часовой пояс.
 timezone = "Europe/Moscow"
 
+[[common.post_actions]]
+# Скрипт выполняется после обработки всех выбранных модулей в указанном порядке.
+path = "sql/post_actions/assign_object_owner.sql"
+run_on = ["success", "partial_success"]
+
 [common.postgres]
 # Значение host переопределяется переменной окружения POSTGRES_HOST, если она задана.
 host = "localhost"

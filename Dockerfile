@@ -22,6 +22,7 @@ RUN addgroup -S appgroup && adduser -S -G appgroup -D appuser && \
 
 COPY --chown=appuser:appgroup --from=deps /app/.venv /app/.venv
 COPY --chown=appuser:appgroup src ./src
+COPY --chown=appuser:appgroup sql ./sql
 
 USER appuser
 ENTRYPOINT ["python", "src/main.py"]

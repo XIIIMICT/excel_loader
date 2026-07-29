@@ -8,7 +8,7 @@ if TYPE_CHECKING:
     from config import Settings
     from dictionary_models import DictionaryPayload
 
-PRIMARY_KEY_COLUMNS = ("source", "prod_version")
+PRIMARY_KEY_COLUMNS = ("source_code", "prod_version")
 TABLE_NAME = "quotes_nsi_core_products"
 
 
@@ -16,7 +16,7 @@ def build_payload(settings: Settings, source_path: Path) -> DictionaryPayload:
     frame, metadata = read_single_sheet_frame(source_path, timezone=settings.app_timezone)
     selected_frame = select_columns_between(
         frame,
-        start_column="source",
+        start_column="source_code",
         end_column="rep_currency",
     )
     return build_dictionary_payload(

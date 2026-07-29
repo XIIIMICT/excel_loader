@@ -6,9 +6,11 @@ from dictionaries.quotes_nsi.locations import build_payload as build_locations_p
 from dictionaries.quotes_nsi.nomenclative_groups import build_payload as build_nomenclative_groups_payload
 from dictionaries.quotes_nsi.nomenclature import build_payload as build_nomenclature_payload
 from dictionaries.quotes_nsi.prod_versions import build_payload as build_prod_versions_payload
+from dictionaries.quotes_nsi.sources import build_payload as build_sources_payload
 from dictionaries.quotes_nsi.units import build_payload as build_units_payload
 
 DICTIONARIES = (
+    DictionaryLoader("quotes_nsi_sources", "quotes_nsi/quotes_nsi_sources.xlsx", build_sources_payload),
     DictionaryLoader(
         "quotes_nsi_prod_versions",
         "quotes_nsi/quotes_nsi_prod_versions.xlsb",

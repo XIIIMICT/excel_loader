@@ -36,6 +36,7 @@ async def align_table_structure(connection: AsyncConnection, table: Table) -> No
     await _drop_retired_file_metadata_columns(connection, table, existing_columns)
     await _ensure_columns(connection, table, existing_columns)
     await _ensure_primary_key(connection, table)
+    await _ensure_unique_constraints(connection, table)
 
 
 async def _drop_retired_file_metadata_columns(
@@ -187,6 +188,41 @@ async def _fetch_existing_columns(connection: AsyncConnection, table: Table) -> 
         }
         for row in result.mappings()
     }
+
+
+async def _ensure_unique_constraints(connection: AsyncConnection, table: Table) -> None:
+    expected_columns = {column.name for column in table.columns if column.unique}
+    if not expected_columns:
+        return
+
+    result = await connection.execute(
+        text(
+            """
+            SELECT attribute.attname AS column_name
+            FROM pg_constraint AS unique_constraint
+            JOIN pg_class AS relation ON relation.oid = unique_constraint.conrelid
+            JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+            JOIN unnest(unique_constraint.conkey) AS key_column(attnum) ON TRUE
+            JOIN pg_attribute AS attribute
+              ON attribute.attrelid = relation.oid
+             AND attribute.attnum = key_column.attnum
+            WHERE unique_constraint.contype = 'u'
+              AND cardinality(unique_constraint.conkey) = 1
+              AND namespace.nspname = :schema_name
+              AND relation.relname = :table_name
+            """,
+        ),
+        {"schema_name": table.schema, "table_name": table.name},
+    )
+    existing_columns = {str(row["column_name"]) for row in result.mappings()}
+    for column_name in sorted(expected_columns - existing_columns):
+        constraint_name = f"uq_{table.name}_{column_name}"
+        await connection.execute(
+            text(
+                f"ALTER TABLE {qualified_table_name(table)} "
+                f"ADD CONSTRAINT {quote_identifier(constraint_name)} UNIQUE ({quote_identifier(column_name)})",
+            ),
+        )
 
 
 async def _ensure_columns(

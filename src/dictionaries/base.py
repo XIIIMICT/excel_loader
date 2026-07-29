@@ -4,9 +4,10 @@ from pathlib import Path
 from typing import Literal
 
 from config import Settings
-from dictionary_models import DictionaryPayload
+from dictionary_models import CombinedDictionaryPayload, DictionaryPayload
 
 type BuildPayloadFn = Callable[[Settings, Path], DictionaryPayload]
+type BuildCombinedPayloadFn = Callable[[Settings, tuple[Path, ...]], CombinedDictionaryPayload]
 type NormalizationStyle = Literal["capitalize", "uppercase"]
 
 
@@ -22,3 +23,10 @@ class DictionaryLoader:
         if self.normalization_styles is None:
             return "capitalize"
         return self.normalization_styles.get(column_name, "capitalize")
+
+
+@dataclass(frozen=True, slots=True)
+class CombinedDictionaryLoader:
+    table_name: str
+    source_paths: tuple[str, ...]
+    build_payload: BuildCombinedPayloadFn

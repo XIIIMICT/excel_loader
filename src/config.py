@@ -4,7 +4,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime, tzinfo
 from os import environ
 from pathlib import Path
-from typing import Self
+from typing import Literal, Self
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -22,6 +22,7 @@ SALES_OP_SMTP_ERROR_SUBJECT = "План продаж: предупреждени
 
 type PatternOrPath = str | Path
 type SourceMode = str
+type PostActionMode = Literal["success", "partial_success", "always"]
 
 
 class SourcesConfig(BaseModel):
@@ -126,6 +127,28 @@ class SmtpConfig(BaseModel):
         return self
 
 
+class PostActionConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: Path
+    run_on: tuple[PostActionMode, ...]
+
+    @field_validator("path", mode="after")
+    @classmethod
+    def resolve_project_path(cls, value: Path) -> Path:
+        if value.is_absolute():
+            return value
+        return PROJECT_DIR / value
+
+    @field_validator("run_on", mode="after")
+    @classmethod
+    def validate_run_on(cls, value: tuple[PostActionMode, ...]) -> tuple[PostActionMode, ...]:
+        if not value:
+            msg = "Для общего пост-действия требуется указать хотя бы одно состояние run_on."
+            raise ValueError(msg)
+        return tuple(dict.fromkeys(value))
+
+
 class CommonConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -136,6 +159,7 @@ class CommonConfig(BaseModel):
     postgres: PostgresConfig = Field(default_factory=PostgresConfig)
     imap: ImapConfig = Field(default_factory=ImapConfig)
     smtp: SmtpConfig = Field(default_factory=SmtpConfig)
+    post_actions: tuple[PostActionConfig, ...] = ()
 
     @field_validator("log_dir", "unloaded_data_dir", "mock_data_dir", mode="after")
     @classmethod

@@ -23,6 +23,7 @@ def build_payload(settings: Settings, source_path: Path) -> DictionaryPayload:
         table_reference=settings.quotes_table_schema_reference(TABLE_NAME),
         selected_frame=selected_frame,
         primary_key_columns=PRIMARY_KEY_COLUMNS,
+        not_null_columns=("prod_version",),
         not_null_filtered_columns=("min_price", "max_price"),
         column_kinds={
             "rep_date": "date",

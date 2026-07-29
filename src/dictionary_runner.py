@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from contextlib import ExitStack
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -20,7 +21,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncEngine
 
     from config import ModuleConfig, Settings
-    from dictionaries.base import DictionaryLoader
+    from dictionaries.base import CombinedDictionaryLoader, DictionaryLoader
     from dictionary_models import DictionaryPayload
 
 LOGGER = get_logger("dictionaries")
@@ -49,6 +50,7 @@ async def run_dictionaries(
     module_label: str,
     module_config: ModuleConfig,
     dictionary_loaders: tuple[DictionaryLoader, ...],
+    combined_loaders: tuple[CombinedDictionaryLoader, ...] = (),
 ) -> DictionaryRunSummary:
     failed_files = 0
     warning_files = 0
@@ -71,6 +73,21 @@ async def run_dictionaries(
                 failed_files += 1
             elif loaded_table is not None:
                 loaded_tables.append(loaded_table)
+        for combined_loader in combined_loaders:
+            loaded_table, is_warning = await _process_combined_loader(
+                settings=settings,
+                module_label=module_label,
+                module_config=module_config,
+                combined_loader=combined_loader,
+                engine=engine,
+                history_table=history_table,
+            )
+            if is_warning:
+                warning_files += 1
+            if loaded_table is None and not is_warning:
+                failed_files += 1
+            elif loaded_table is not None:
+                loaded_tables.append(loaded_table)
 
     finally:
         await engine.dispose()
@@ -80,6 +97,101 @@ async def run_dictionaries(
         warning_files=warning_files,
         loaded_tables=tuple(loaded_tables),
     )
+
+
+async def _process_combined_loader(  # noqa: PLR0913
+    *,
+    settings: Settings,
+    module_label: str,
+    module_config: ModuleConfig,
+    combined_loader: CombinedDictionaryLoader,
+    engine: AsyncEngine,
+    history_table: Table,
+) -> tuple[Table | None, bool]:
+    source_files = []
+    missing_sources = 0
+    try:
+        with ExitStack() as stack:
+            for source_path in combined_loader.source_paths:
+                try:
+                    source_file = stack.enter_context(
+                        resolve_source(
+                            settings,
+                            source_config=module_config.sources,
+                            data_dir=module_config.sources.data_dir,
+                            default_pattern_or_path=source_path,
+                        ),
+                    )
+                except SourceError as error:
+                    LOGGER.warning(
+                        "%s: файл %s не найден, его часть составного справочника %s пропущена. Причина: %s.",
+                        module_label,
+                        source_path,
+                        combined_loader.table_name,
+                        error,
+                    )
+                    missing_sources += 1
+                    continue
+                source_files.append(source_file)
+
+            if not source_files:
+                return None, True
+
+            combined_payload = combined_loader.build_payload(
+                settings,
+                tuple(source_file.path for source_file in source_files),
+            )
+            payload = combined_payload.payload
+            history_entries = tuple(
+                SourceHistoryEntry(
+                    loaded_at=metadata.loaded_at,
+                    src_file=source_file.history_reference,
+                    dest_table=payload.table_reference,
+                    file_modified_at=metadata.file_modified_at,
+                    file_modifier=metadata.file_modifier,
+                )
+                for source_file, metadata in zip(source_files, combined_payload.source_metadata, strict=True)
+            )
+
+        table = build_dictionary_table(
+            table_reference=payload.table_reference,
+            columns=payload.columns,
+            primary_key_columns=payload.primary_key_columns,
+        )
+        storage = await inspect_storage(table, engine=engine)
+        if storage.needs_seed:
+            await prepare_storage(table, engine=engine, users_to_grant=module_config.users_to_grant)
+        await replace_table_rows(
+            engine,
+            table,
+            rows=payload.rows,
+            history_table=history_table,
+            history_entries=history_entries,
+        )
+    except BusinessLoadError as error:
+        LOGGER.log(
+            logging.ERROR,
+            "%s: составной справочник %s не обновлён. Причина: %s.",
+            module_label,
+            combined_loader.table_name,
+            error.reason,
+        )
+        return None, False
+    except Exception:
+        LOGGER.exception(
+            "%s: составной справочник %s не обновлён из-за внутренней ошибки обработки.",
+            module_label,
+            combined_loader.table_name,
+        )
+        return None, False
+
+    LOGGER.info(
+        "%s: составной справочник %s успешно обновлён из %d файлов.",
+        module_label,
+        combined_loader.table_name,
+        len(source_files),
+    )
+    return table, missing_sources > 0 or payload.warning_count > 0
 
 
 async def _process_dictionary_loader(  # noqa: PLR0913

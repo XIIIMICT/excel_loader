@@ -22,7 +22,8 @@ def build_payload(settings: Settings, source_path: Path) -> DictionaryPayload:
         table_reference=TABLE_REFERENCE,
         selected_frame=frame,
         primary_key_columns=(),
-        column_kinds={"date": "date", "price": "float"},
+        not_null_columns=("prod_version",),
+        column_kinds={"pub_date": "date", "avg_price": "float"},
         metadata=metadata,
         source_name=str(source_path),
     )

@@ -30,3 +30,11 @@ class CombinedDictionaryLoader:
     table_name: str
     source_paths: tuple[str, ...]
     build_payload: BuildCombinedPayloadFn
+
+
+@dataclass(frozen=True, slots=True)
+class PatternDictionaryLoader:
+    table_name: str
+    source_dir: str | None
+    file_pattern: str
+    build_payload: BuildCombinedPayloadFn

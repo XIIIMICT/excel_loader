@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import re
 from typing import TYPE_CHECKING
 
@@ -17,6 +15,11 @@ if TYPE_CHECKING:
 TABLE_NAME = "quotes_excel_sci"
 PRIMARY_KEY_COLUMNS = ("pub_date", "prod_version", "product_id")
 TARGET_COLUMNS = ("pub_date", "prod_version", "avg_price", "product_id")
+SOURCE_COLUMNS = ("Дата", "prod_version", "CIF China, $/т", "product_id")
+SOURCE_COLUMN_ALIASES = {
+    "Дата": "pub_date",
+    "CIF China, $/т": "avg_price",
+}
 HEADER_NAMES = ("Дата", "Товар", "Марка", "CIF China, $/т")
 MARKET_SUFFIX_PATTERN = re.compile(r"\s+market\s*$", re.IGNORECASE)
 SHEET_PATTERNS = {
@@ -36,7 +39,7 @@ def build_payload(settings: Settings, source_paths: tuple[Path, ...]) -> Combine
         metadata.append(read_workbook_metadata(source_path, timezone=settings.app_timezone))
         frames.extend(_read_source_frames(source_path))
 
-    combined_frame = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=TARGET_COLUMNS)
+    combined_frame = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=SOURCE_COLUMNS)
     payload = build_dictionary_payload(
         table_reference=settings.quotes_table_schema_reference(TABLE_NAME),
         selected_frame=combined_frame,
@@ -45,6 +48,7 @@ def build_payload(settings: Settings, source_paths: tuple[Path, ...]) -> Combine
         column_kinds={"pub_date": "date", "avg_price": "float"},
         metadata=metadata[0],
         source_name=", ".join(str(path) for path in source_paths),
+        column_aliases=SOURCE_COLUMN_ALIASES,
     )
     return CombinedDictionaryPayload(payload=payload, source_metadata=tuple(metadata))
 
@@ -81,13 +85,13 @@ def _read_sheet_frame(source_path: Path, sheet_name: str) -> pd.DataFrame:
         product_version = MARKET_SUFFIX_PATTERN.sub("", f"{product} {brand}").strip()
         rows.append(
             {
-                "pub_date": pub_date,
+                "Дата": pub_date,
                 "prod_version": f"{product_version} CIF China, USD/т",
-                "avg_price": source_row.iloc[column_indexes["CIF China, $/т"]],
+                "CIF China, $/т": source_row.iloc[column_indexes["CIF China, $/т"]],
                 "product_id": product_id,
             },
         )
-    return pd.DataFrame(rows, columns=TARGET_COLUMNS)
+    return pd.DataFrame(rows, columns=SOURCE_COLUMNS)
 
 
 def _find_header_row(frame: pd.DataFrame) -> int:

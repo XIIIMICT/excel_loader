@@ -15,6 +15,7 @@ from db import create_postgres_engine
 from dictionaries.quotes_nsi_registry import DICTIONARIES as QUOTES_NSI_DICTIONARIES
 from dictionaries.quotes_registry import COMBINED_DICTIONARIES as QUOTES_COMBINED_DICTIONARIES
 from dictionaries.quotes_registry import DICTIONARIES as QUOTES_DICTIONARIES
+from dictionaries.quotes_registry import PATTERN_DICTIONARIES as QUOTES_PATTERN_DICTIONARIES
 from dictionary_runner import DictionaryRunSummary, run_dictionaries
 from email_sender import send_log_email
 from pd.runner import PdRunSummary, run_pd
@@ -156,6 +157,7 @@ async def _run_dictionary_module(settings: Settings, *, module_code: str) -> Mod
         module_config=module_config,
         dictionary_loaders=QUOTES_NSI_DICTIONARIES if is_quotes_nsi else QUOTES_DICTIONARIES,
         combined_loaders=() if is_quotes_nsi else QUOTES_COMBINED_DICTIONARIES,
+        pattern_loaders=() if is_quotes_nsi else QUOTES_PATTERN_DICTIONARIES,
     )
     return ModuleRun(
         code=module_code,

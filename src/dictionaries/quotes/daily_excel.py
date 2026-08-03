@@ -10,6 +10,11 @@ if TYPE_CHECKING:
 
 SHEET_NAME = "base"
 TABLE_REFERENCE = "raw.quotes_excel_daily"
+SOURCE_COLUMN_ALIASES = {
+    "Дата": "pub_date",
+    "Продукт": "prod_version",
+    "Цена": "avg_price",
+}
 
 
 def build_payload(settings: Settings, source_path: Path) -> DictionaryPayload:
@@ -26,4 +31,5 @@ def build_payload(settings: Settings, source_path: Path) -> DictionaryPayload:
         column_kinds={"pub_date": "date", "avg_price": "float"},
         metadata=metadata,
         source_name=str(source_path),
+        column_aliases=SOURCE_COLUMN_ALIASES,
     )

@@ -12,19 +12,19 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 
 
 def test_duplicate_sci_primary_key_is_an_error() -> None:
-    source_paths = tuple(sorted((PROJECT_DIR / "mock_data" / "sci").glob("*.XLSX")))
+    source_paths = tuple(sorted((PROJECT_DIR / "mock_data" / "quotes" / "SCI").glob("*.XLSX")))
 
     with pytest.raises(DuplicatePrimaryKeyError):
         sci.build_payload(load_settings(), source_paths)
 
 
 def test_builds_sci_payload_with_required_columns(monkeypatch: pytest.MonkeyPatch) -> None:
-    source_path = PROJECT_DIR / "mock_data" / "sci" / "SCI СКС_new.example.XLSX"
+    source_path = PROJECT_DIR / "mock_data" / "quotes" / "SCI" / "SCI СКС_new.example.XLSX"
     source_frame = pd.DataFrame(
         {
-            "pub_date": [date(2026, 7, 1)],
+            "Дата": [date(2026, 7, 1)],
             "prod_version": ["SBR 1502 CIF China, USD/т"],
-            "avg_price": [1234.5],
+            "CIF China, $/т": [1234.5],
             "product_id": ["  product  1  "],
         },
     )

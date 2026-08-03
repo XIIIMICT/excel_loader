@@ -1,4 +1,5 @@
 import re
+from collections.abc import Callable
 from datetime import date, datetime, time, tzinfo
 from numbers import Number
 from typing import TYPE_CHECKING, Literal
@@ -31,6 +32,7 @@ OOXML_NAMESPACES = {
     "dc": "http://purl.org/dc/elements/1.1/",
 }
 EXCEL_ERROR_VALUES = {"#NULL!", "#DIV/0!", "#VALUE!", "#REF!", "#NAME?", "#NUM!", "#N/A", "#GETTING_DATA"}
+type CellValueConverter = Callable[[object], DbValue]
 LOGGER = get_logger("excel")
 
 
@@ -118,7 +120,7 @@ def select_columns_excluding_checks(frame: pd.DataFrame) -> pd.DataFrame:
     return frame.loc[:, selected_headers].copy()
 
 
-def build_dictionary_payload(  # noqa: C901, PLR0912, PLR0913
+def build_dictionary_payload(  # noqa: C901, PLR0912, PLR0913, PLR0915
     *,
     table_reference: str,
     selected_frame: pd.DataFrame,
@@ -130,7 +132,13 @@ def build_dictionary_payload(  # noqa: C901, PLR0912, PLR0913
     column_kinds: dict[str, ColumnKind] | None = None,
     source_name: str | None = None,
     preserve_text_values: bool = False,
+    column_aliases: dict[str, str] | None = None,
+    column_converters: dict[str, CellValueConverter] | None = None,
+    where_columns: dict[str, object] | None = None,
+    dropped_columns: tuple[str, ...] = (),
 ) -> DictionaryPayload:
+    if column_aliases:
+        selected_frame = _apply_column_aliases(selected_frame, column_aliases=column_aliases)
     selected_columns = tuple(str(column) for column in selected_frame.columns)
     for primary_key_column in primary_key_columns:
         if primary_key_column not in selected_columns:
@@ -138,36 +146,46 @@ def build_dictionary_payload(  # noqa: C901, PLR0912, PLR0913
     for filtered_column in not_null_filtered_columns:
         if filtered_column not in selected_columns:
             raise SourceColumnMissingError(filtered_column)
-    for configured_column in (*not_null_columns, *unique_columns):
+    for configured_column in (*not_null_columns, *unique_columns, *(where_columns or {})):
         if configured_column not in selected_columns:
             raise SourceColumnMissingError(configured_column)
 
+    target_columns = tuple(column_name for column_name in selected_columns if column_name not in dropped_columns)
     rows: list[DbRow] = []
     warning_count = 0
     unique_keys: set[tuple[object, ...]] = set()
     unique_values: dict[str, dict[object, str]] = {column_name: {} for column_name in unique_columns}
     first_required_error: RequiredCellValueError | None = None
     configured_column_kinds = column_kinds or {}
+    configured_column_converters = column_converters or {}
     for row_number, row in enumerate(selected_frame.itertuples(index=False, name=None), start=2):
         raw_row = dict(zip(selected_columns, row, strict=True))
+        if not _row_matches_where(raw_row, where_columns):
+            continue
         if _should_skip_raw_filtered_row(raw_row, not_null_filtered_columns):
             continue
         prepared_row: DbRow = {}
         for column_index, (column_name, value) in enumerate(zip(selected_columns, row, strict=True), start=1):
-            kind = configured_column_kinds.get(column_name, TEXT_COLUMN_KIND)
-            nullable = column_name not in primary_key_columns and column_name not in not_null_columns
+            if column_name in dropped_columns:
+                continue
             cell_reference = f"{_excel_column_name(column_index)}{row_number}"
-            if _is_excel_error(value):
-                warning_count += 1
-            prepared_row[column_name] = convert_excel_value(
-                value,
-                kind=kind,
-                cell_reference=cell_reference,
-                excel_errors_as_null=True,
-                source_name=source_name,
-                preserve_text=preserve_text_values,
-                nullable=nullable,
-            )
+            nullable = column_name not in primary_key_columns and column_name not in not_null_columns
+            converter = configured_column_converters.get(column_name)
+            if converter is not None:
+                prepared_row[column_name] = converter(value)
+            else:
+                kind = configured_column_kinds.get(column_name, TEXT_COLUMN_KIND)
+                if _is_excel_error(value):
+                    warning_count += 1
+                prepared_row[column_name] = convert_excel_value(
+                    value,
+                    kind=kind,
+                    cell_reference=cell_reference,
+                    excel_errors_as_null=True,
+                    source_name=source_name,
+                    preserve_text=preserve_text_values,
+                    nullable=nullable,
+                )
             prepared_value = prepared_row[column_name]
             if not nullable and prepared_value is None and first_required_error is None:
                 first_required_error = RequiredCellValueError(cell_reference, column_name, value)
@@ -195,7 +213,7 @@ def build_dictionary_payload(  # noqa: C901, PLR0912, PLR0913
         raise first_required_error
 
     columns = _build_column_definitions(
-        selected_columns=selected_columns,
+        selected_columns=target_columns,
         primary_key_columns=primary_key_columns,
         column_kinds=configured_column_kinds,
         not_null_columns=not_null_columns,
@@ -223,8 +241,43 @@ def _should_skip_raw_filtered_row(row: dict[str, object], filtered_columns: tupl
     )
 
 
+def _row_matches_where(row: dict[str, object], where_columns: dict[str, object] | None) -> bool:
+    if not where_columns:
+        return True
+    return all(
+        normalize_text_value(row[column_name]) == normalize_text_value(expected_value)
+        for column_name, expected_value in where_columns.items()
+    )
+
+
 def _is_null_like(value: object) -> bool:
     return value is None or value == ""
+
+
+def _apply_column_aliases(
+    selected_frame: pd.DataFrame,
+    *,
+    column_aliases: dict[str, str],
+) -> pd.DataFrame:
+    source_columns = tuple(str(column) for column in selected_frame.columns)
+    normalized_aliases = {str(source_name): str(target_name) for source_name, target_name in column_aliases.items()}
+    for source_column in normalized_aliases:
+        if source_column not in source_columns:
+            raise SourceColumnMissingError(source_column)
+
+    renamed_columns = tuple(normalized_aliases.get(source_column, source_column) for source_column in source_columns)
+    duplicate_names = sorted({name for name in renamed_columns if renamed_columns.count(name) > 1})
+    if duplicate_names:
+        duplicate_text = ", ".join(repr(name) for name in duplicate_names)
+        msg = f"column_aliases приводит к дублированию целевых столбцов: {duplicate_text}."
+        raise ValueError(msg)
+
+    rename_map = {
+        source_column: normalized_aliases[source_column]
+        for source_column in source_columns
+        if source_column in normalized_aliases
+    }
+    return selected_frame.rename(columns=rename_map)
 
 
 def _build_column_definitions(

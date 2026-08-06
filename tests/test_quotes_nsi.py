@@ -26,6 +26,17 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
         ("", "required", False),
         ("0", "required", True),
         ("да", "required", True),
+        ("Y", "required", True),
+        ("y", "required", True),
+        ("n", "required", False),
+        (" N ", "required", False),
+        ("yes", "required", True),
+        ("YES", "required", True),
+        ("no", "required", False),
+        ("No", "required", False),
+        ("нет", "required", False),
+        ("НЕТ", "required", False),
+        ("Да", "required", True),
     ],
 )
 def test_boolean_conversion(value: object, nullable_mode: str, expected: object) -> None:
@@ -57,7 +68,11 @@ def test_sources_are_normalized_and_have_database_constraints() -> None:
     assert columns["source_fullname"].nullable is False
     assert columns["source_fullname"].unique is True
     assert columns["source_shortname"].nullable is False
-    assert columns["source_shortname"].unique is True
+    assert columns["source_shortname"].unique is False
+    assert columns["dest_table"].nullable is True
+    assert columns["dest_table"].unique is True
+    assert payload.rows
+    assert all(row["dest_table"] is None for row in payload.rows)
     assert all(
         value == " ".join(value.split()) for row in payload.rows for value in row.values() if isinstance(value, str)
     )

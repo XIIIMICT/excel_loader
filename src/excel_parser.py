@@ -374,16 +374,18 @@ def _convert_normalized_value(
 
 
 def _convert_boolean_value(value: object, *, nullable: bool) -> bool | None:
-    if value is None or pd.isna(value):
-        return None if nullable else False
     if isinstance(value, bool):
         return value
     if isinstance(value, Number):
         return value != 0
+    if value is None or pd.isna(value) or (isinstance(value, str) and not value.strip()):
+        return None if nullable else False
 
     normalized = str(value).strip().lower()
-    if not normalized:
-        return None if nullable else False
+    if normalized in {"y", "yes", "да"}:
+        return True
+    if normalized in {"n", "no", "нет"}:
+        return False
     return normalized != "false"
 
 

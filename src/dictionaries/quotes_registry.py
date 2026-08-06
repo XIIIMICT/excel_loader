@@ -1,4 +1,6 @@
 from dictionaries.base import CombinedDictionaryLoader, DictionaryLoader, PatternDictionaryLoader
+from dictionaries.quotes.argus_pdf import FILE_PATTERN as ARGUS_PDF_FILE_PATTERN
+from dictionaries.quotes.argus_pdf import build_payload as build_argus_pdf_payload
 from dictionaries.quotes.baiinfo import FILE_PATTERN as BAIINFO_FILE_PATTERN
 from dictionaries.quotes.baiinfo import build_payload as build_baiinfo_payload
 from dictionaries.quotes.cheminsight_p import build_payload as build_cheminsight_payload
@@ -24,5 +26,11 @@ PATTERN_DICTIONARIES = (
         "quotes/Baiinfo",
         BAIINFO_FILE_PATTERN,
         build_baiinfo_payload,
+    ),
+    PatternDictionaryLoader(
+        "quotes_excel_argus_pdf",
+        "quotes/Argus PDF",
+        ARGUS_PDF_FILE_PATTERN,
+        build_argus_pdf_payload,
     ),
 )

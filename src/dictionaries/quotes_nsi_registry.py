@@ -1,4 +1,5 @@
 from dictionaries.base import DictionaryLoader
+from dictionaries.quotes_nsi.argus_fc_exception import build_payload as build_argus_fc_exception_payload
 from dictionaries.quotes_nsi.core_products import build_payload as build_core_products_payload
 from dictionaries.quotes_nsi.frequencies import build_payload as build_frequencies_payload
 from dictionaries.quotes_nsi.frequencies_rank import build_payload as build_frequencies_rank_payload
@@ -40,5 +41,10 @@ DICTIONARIES = (
     ),
     DictionaryLoader(
         "quotes_nsi_core_products", "quotes_nsi/quotes_nsi_core_products.xlsb", build_core_products_payload
+    ),
+    DictionaryLoader(
+        "quotes_nsi_argus_fc_exception",
+        "quotes_nsi/quotes_nsi_argus_fc_exception.xlsb",
+        build_argus_fc_exception_payload,
     ),
 )

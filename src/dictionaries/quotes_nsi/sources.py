@@ -12,17 +12,21 @@ if TYPE_CHECKING:
 
 PRIMARY_KEY_COLUMNS = ("source_code",)
 TABLE_NAME = "quotes_nsi_sources"
-COLUMNS = ("source_code", "source_fullname", "source_shortname")
+SOURCE_COLUMNS = ("source_code", "source_fullname", "source_shortname")
+NOT_NULL_COLUMNS = SOURCE_COLUMNS
+UNIQUE_COLUMNS = ("source_code", "source_fullname", "dest_table")
 
 
 def build_payload(settings: Settings, source_path: Path) -> DictionaryPayload:
     frame, metadata = read_single_sheet_frame(source_path, timezone=settings.app_timezone, sheet_name="dic")
+    selected_frame = frame.loc[:, list(SOURCE_COLUMNS)].copy()
+    selected_frame["dest_table"] = None
     return build_dictionary_payload(
         table_reference=settings.quotes_nsi_table_schema_reference(TABLE_NAME),
-        selected_frame=frame.loc[:, list(COLUMNS)].copy(),
+        selected_frame=selected_frame,
         primary_key_columns=PRIMARY_KEY_COLUMNS,
-        not_null_columns=COLUMNS,
-        unique_columns=COLUMNS,
+        not_null_columns=NOT_NULL_COLUMNS,
+        unique_columns=UNIQUE_COLUMNS,
         metadata=metadata,
         source_name=str(source_path),
     )

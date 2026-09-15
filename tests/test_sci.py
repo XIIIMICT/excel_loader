@@ -12,7 +12,7 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 
 
 def test_blank_row_ends_the_data_block() -> None:
-    source_path = PROJECT_DIR / "mock_data" / "quotes" / "SCI" / "SCI СКС_new.example.XLSX"
+    source_path = PROJECT_DIR / "mock_data" / "quotes" / "SCI" / "SCI СКС_new.XLSX"
 
     payload = sci.build_payload(load_settings(), (source_path,)).payload
 
@@ -23,7 +23,7 @@ def test_blank_row_ends_the_data_block() -> None:
 
 
 def test_duplicate_sci_primary_key_is_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    source_path = PROJECT_DIR / "mock_data" / "quotes" / "SCI" / "SCI СКС_new.example.XLSX"
+    source_path = PROJECT_DIR / "mock_data" / "quotes" / "SCI" / "SCI СКС_new.XLSX"
     source_frame = pd.DataFrame(
         {
             "Дата": [date(2026, 7, 1), date(2026, 7, 1)],
@@ -39,7 +39,7 @@ def test_duplicate_sci_primary_key_is_an_error(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_builds_sci_payload_with_required_columns(monkeypatch: pytest.MonkeyPatch) -> None:
-    source_path = PROJECT_DIR / "mock_data" / "quotes" / "SCI" / "SCI СКС_new.example.XLSX"
+    source_path = PROJECT_DIR / "mock_data" / "quotes" / "SCI" / "SCI СКС_new.XLSX"
     source_frame = pd.DataFrame(
         {
             "Дата": [date(2026, 7, 1)],

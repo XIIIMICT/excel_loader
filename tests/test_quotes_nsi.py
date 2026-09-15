@@ -58,7 +58,7 @@ def test_boolean_conversion(value: object, nullable_mode: str, expected: object)
 
 
 def test_sources_are_normalized_and_have_database_constraints() -> None:
-    source_path = PROJECT_DIR / "mock_data" / "quotes_nsi" / "quotes_nsi_sources.example.xlsx"
+    source_path = PROJECT_DIR / "mock_data" / "quotes_nsi" / "quotes_nsi_sources.xlsx"
     payload = build_sources_payload(load_settings(), source_path)
     columns = {column.name: column for column in payload.columns}
 

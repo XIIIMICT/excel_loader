@@ -4,7 +4,7 @@ from config import load_settings
 from dictionaries.quotes_nsi.argus_fc_exception import build_payload
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
-SOURCE_PATH = PROJECT_DIR / "mock_data" / "quotes_nsi" / "quotes_nsi_argus_fc_exception.example.xlsb"
+SOURCE_PATH = PROJECT_DIR / "mock_data" / "quotes_nsi" / "quotes_nsi_argus_fc_exception.xlsb"
 
 
 def test_builds_argus_fc_exception_payload_with_boolean_columns() -> None:

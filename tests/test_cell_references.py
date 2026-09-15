@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from dictionary_models import WorkbookMetadata
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
-SOURCE_PATH = PROJECT_DIR / "mock_data" / "quotes_nsi" / "quotes_nsi_argus_fc_exception.example.xlsb"
+SOURCE_PATH = PROJECT_DIR / "mock_data" / "quotes_nsi" / "quotes_nsi_argus_fc_exception.xlsb"
 
 
 def _selected_frame() -> tuple[pd.DataFrame, WorkbookMetadata]:
@@ -48,11 +48,11 @@ def test_required_error_keeps_sheet_name_and_original_cell() -> None:
             selected_frame=frame,
             primary_key_columns=("source_code",),
             metadata=metadata,
-            source_name="quotes_nsi_argus_fc_exception.example.xlsb",
+            source_name="quotes_nsi_argus_fc_exception.xlsb",
         )
 
     assert "dic!A2" in error_info.value.reason
-    assert "quotes_nsi_argus_fc_exception.example.xlsb" in error_info.value.reason
+    assert "quotes_nsi_argus_fc_exception.xlsb" in error_info.value.reason
 
 
 def test_unique_error_keeps_sheet_name_and_original_cells() -> None:

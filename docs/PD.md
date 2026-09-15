@@ -5,7 +5,7 @@ The production-summary module. Unlike the quote dictionaries, PD is an **increme
 - Parsing: `src/pd/excel_parser.py`, models — `src/pd/models.py`.
 - DB load and `pd_view` — `src/pd/db.py`, table schema — `src/pd/schema.py`.
 - Orchestration, deferred packages — `src/pd/runner.py`, `src/pd/unsent.py`.
-- Source: every `.xlsx` from `pd.sources.data_dir` (default `data/pd`), or IMAP. The seed sample — `mock_data/pd/Сводка ПД 2026 23.06.2026.example.xlsx`.
+- Source: every `.xlsx` from `pd.sources.data_dir` (default `data/pd`), or IMAP. The seed sample — `mock_data/pd/pd.xlsx`.
 
 ## Schema
 
@@ -57,4 +57,4 @@ Source-history metadata (`history_reference`, `file_modified_at`, `file_modifier
 
 ## Seed
 
-`just seed` (`uv run src/scripts/seed.py`) fills the PD reference data from `mock_data/pd/Сводка ПД 2026 23.06.2026.example.xlsx`. This is the only seed script; shared schema/table helpers live in `src/storage.py`.
+`just seed` (`uv run src/scripts/seed.py`) fills the PD reference data from `mock_data/pd/pd.xlsx`. This is the only seed script; shared schema/table helpers live in `src/storage.py`.

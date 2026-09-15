@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     from pd.models import Indicator, ParsedReport
 
 LOGGER = get_logger("seed")
-SEED_PD_SOURCE_PATH = Path("pd") / "pd.example.xlsx"
+SEED_PD_SOURCE_PATH = Path("pd") / "pd.xlsx"
 
 SEED_INDICATOR_DB_NAMES_BY_XLS_COL = {
     "F": "production_daily_t",

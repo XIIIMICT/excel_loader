@@ -8,8 +8,8 @@ from config import load_settings
 from dictionaries.quotes import baiinfo
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
-SOURCE_PATH = PROJECT_DIR / "mock_data" / "quotes" / "Baiinfo" / "Baiinfo. Уротропин.example.xlsb"
-SECOND_SOURCE_PATH = PROJECT_DIR / "mock_data" / "quotes" / "Baiinfo" / "Baiinfo. Меламин.example.xlsb"
+SOURCE_PATH = PROJECT_DIR / "mock_data" / "quotes" / "Baiinfo" / "Baiinfo. Уротропин.xlsb"
+SECOND_SOURCE_PATH = PROJECT_DIR / "mock_data" / "quotes" / "Baiinfo" / "Baiinfo. Меламин.xlsb"
 
 
 def test_builds_baiinfo_payload_with_typed_columns() -> None:

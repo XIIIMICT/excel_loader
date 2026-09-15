@@ -8,7 +8,7 @@ from config import load_settings
 from dictionaries.quotes.argus_pdf import build_payload
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
-SOURCE_PATH = PROJECT_DIR / "mock_data" / "quotes" / "Argus PDF" / "Argus PDF Удобрения.example.xlsb"
+SOURCE_PATH = PROJECT_DIR / "mock_data" / "quotes" / "Argus PDF" / "Argus PDF Удобрения.xlsb"
 
 
 def test_builds_argus_pdf_payload_with_typed_columns() -> None:

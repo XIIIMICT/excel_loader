@@ -8,7 +8,13 @@ import pandas as pd
 
 from business_errors import SourceColumnMissingError, SourceFileNotFoundError
 from dictionary_models import CombinedDictionaryPayload, WorkbookMetadata
-from excel_parser import build_dictionary_payload, read_workbook_metadata
+from excel_parser import (
+    build_cell_locations,
+    build_dictionary_payload,
+    excel_column_name,
+    read_sheet_names,
+    read_workbook_metadata,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -38,10 +44,13 @@ PRODUCT_PROD_VERSIONS = {
 
 def build_payload(settings: Settings, source_paths: tuple[Path, ...]) -> CombinedDictionaryPayload:
     frames: list[pd.DataFrame] = []
+    locations: list[dict[str, str]] = []
     metadata: list[WorkbookMetadata] = []
     for source_path in source_paths:
         metadata.append(read_workbook_metadata(source_path, timezone=settings.app_timezone))
-        frames.append(_read_source_frame(source_path))
+        frame, frame_locations = _read_source_frame(source_path)
+        frames.append(frame)
+        locations.extend(frame_locations)
 
     combined_frame = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=SOURCE_COLUMNS)
     payload = build_dictionary_payload(
@@ -56,11 +65,12 @@ def build_payload(settings: Settings, source_paths: tuple[Path, ...]) -> Combine
         column_converters={"pub_date": _convert_baiinfo_date},
         metadata=metadata[0],
         source_name=", ".join(str(path) for path in source_paths),
+        cell_locations=locations,
     )
     return CombinedDictionaryPayload(payload=payload, source_metadata=tuple(metadata))
 
 
-def _read_source_frame(source_path: Path) -> pd.DataFrame:
+def _read_source_frame(source_path: Path) -> tuple[pd.DataFrame, list[dict[str, str]]]:
     if not source_path.exists():
         raise SourceFileNotFoundError(source_path)
     raw_frame = pd.read_excel(
@@ -86,7 +96,22 @@ def _read_source_frame(source_path: Path) -> pd.DataFrame:
                 "Unit": source_row.iloc[column_indexes["unit"]],
             },
         )
-    return pd.DataFrame(rows, columns=SOURCE_COLUMNS)
+    frame = pd.DataFrame(rows, columns=SOURCE_COLUMNS)
+    locations = build_cell_locations(
+        sheet_name=_sheet_name(source_path),
+        header_row=header_row + 1,
+        column_letters={
+            "Date": excel_column_name(column_indexes["date"] + 1),
+            "Latest Price": excel_column_name(column_indexes["latestprice"] + 1),
+            "Unit": excel_column_name(column_indexes["unit"] + 1),
+        },
+        row_count=len(frame),
+    )
+    return frame, locations
+
+
+def _sheet_name(source_path: Path) -> str:
+    return read_sheet_names(source_path)[0]
 
 
 def _find_header_row(frame: pd.DataFrame) -> int:

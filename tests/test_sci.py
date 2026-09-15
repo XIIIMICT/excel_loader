@@ -28,7 +28,7 @@ def test_builds_sci_payload_with_required_columns(monkeypatch: pytest.MonkeyPatc
             "product_id": ["  product  1  "],
         },
     )
-    monkeypatch.setattr(sci, "_read_source_frames", lambda _source_path: [source_frame])
+    monkeypatch.setattr(sci, "_read_source_frames", lambda _source_path: ([source_frame], []))
 
     result = sci.build_payload(load_settings(), (source_path,))
     payload = result.payload

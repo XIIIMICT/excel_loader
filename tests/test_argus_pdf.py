@@ -20,13 +20,13 @@ def test_builds_argus_pdf_payload_with_typed_columns() -> None:
         "rep_date": "date",
         "prod_version": "text",
         "min_price": "int",
-        "avg_price": "int",
+        "avg_price": "float",
         "max_price": "int",
     }
     assert payload.rows[0]["rep_date"] == date(2025, 10, 28)
     assert payload.rows[0]["prod_version"] == "SOP FOB Egypt, USD/t"
     assert payload.rows[0]["min_price"] == 620
-    assert payload.rows[0]["avg_price"] == 640
+    assert payload.rows[0]["avg_price"] == 640.0
     assert payload.rows[0]["max_price"] == 660
     assert payload.rows[1]["rep_date"] == date(2025, 11, 4)
 

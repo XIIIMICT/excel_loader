@@ -35,18 +35,28 @@ class InvalidCellValueError(BusinessLoadError):
 
 
 class CellTypeConversionError(BusinessLoadError):
-    def __init__(self, cell_reference: str, expected_type: str, value: object) -> None:
-        super().__init__(
-            f"не удалось привести значение {value!r} в ячейке {cell_reference} к типу {expected_type}",
-        )
+    def __init__(
+        self, cell_reference: str, expected_type: str, value: object, *, source_name: str | None = None
+    ) -> None:
+        location = _with_source(cell_reference, source_name=source_name)
+        super().__init__(f"не удалось привести значение {value!r} в ячейке {location} к типу {expected_type}")
         self.cell_reference = cell_reference
         self.expected_type = expected_type
+        self.source_name = source_name
 
 
 class DuplicatePrimaryKeyError(BusinessLoadError):
-    def __init__(self, primary_key_columns: tuple[str, ...], row_number: int | None = None) -> None:
+    def __init__(
+        self,
+        primary_key_columns: tuple[str, ...],
+        row_number: int | None = None,
+        *,
+        row_reference: str | None = None,
+    ) -> None:
         key_columns = " + ".join(primary_key_columns)
-        if row_number is None:
+        if row_reference is not None:
+            reason = f"первичный ключ {key_columns} не уникален, строка {row_reference}"
+        elif row_number is None:
             reason = f"первичный ключ {key_columns} не уникален"
         else:
             reason = f"первичный ключ {key_columns} не уникален, строка {row_number}"
@@ -54,13 +64,16 @@ class DuplicatePrimaryKeyError(BusinessLoadError):
         super().__init__(reason)
         self.primary_key_columns = primary_key_columns
         self.row_number = row_number
+        self.row_reference = row_reference
 
 
 class RequiredCellValueError(BusinessLoadError):
-    def __init__(self, cell_reference: str, column_name: str, value: object) -> None:
-        super().__init__(
-            f"обязательное поле {column_name!r} пусто в ячейке {cell_reference}, значение={value!r}",
-        )
+    def __init__(self, cell_reference: str, column_name: str, value: object, *, source_name: str | None = None) -> None:
+        location = _with_source(cell_reference, source_name=source_name)
+        super().__init__(f"обязательное поле {column_name!r} пусто в ячейке {location}, значение={value!r}")
+        self.cell_reference = cell_reference
+        self.column_name = column_name
+        self.source_name = source_name
 
 
 class DuplicateCellValueError(BusinessLoadError):
@@ -70,11 +83,24 @@ class DuplicateCellValueError(BusinessLoadError):
         value: object,
         cell_reference: str,
         first_cell_reference: str,
+        *,
+        source_name: str | None = None,
     ) -> None:
+        first_location = _with_source(first_cell_reference, source_name=source_name)
+        current_location = _with_source(cell_reference, source_name=source_name)
         super().__init__(
             f"поле {column_name!r} должно быть уникальным: значение {value!r} повторяется "
-            f"в ячейках {first_cell_reference} и {cell_reference}",
+            f"в ячейках {first_location} и {current_location}",
         )
+        self.column_name = column_name
+        self.cell_reference = cell_reference
+        self.source_name = source_name
+
+
+def _with_source(cell_reference: str, *, source_name: str | None) -> str:
+    if source_name is None:
+        return cell_reference
+    return f"{source_name}: {cell_reference}"
 
 
 class DatabaseOperationError(BusinessLoadError):

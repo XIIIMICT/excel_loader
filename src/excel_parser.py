@@ -1,5 +1,6 @@
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date, datetime, time, tzinfo
 from numbers import Number
 from typing import TYPE_CHECKING, Literal
@@ -22,6 +23,7 @@ from business_errors import (
 from dictionary_models import ColumnDefinition, ColumnKind, DbRow, DbValue, DictionaryPayload, WorkbookMetadata
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
     from pathlib import Path
 
 TEXT_COLUMN_KIND = "text"
@@ -32,8 +34,77 @@ OOXML_NAMESPACES = {
     "dc": "http://purl.org/dc/elements/1.1/",
 }
 EXCEL_ERROR_VALUES = {"#NULL!", "#DIV/0!", "#VALUE!", "#REF!", "#NAME?", "#NUM!", "#N/A", "#GETTING_DATA"}
+ORIGIN_ATTR = "xls_origin"
 type CellValueConverter = Callable[[object], DbValue]
 LOGGER = get_logger("excel")
+
+
+@dataclass(frozen=True, slots=True)
+class FrameOrigin:
+    """
+    Original workbook coordinates of a parsed frame.
+
+    Keeps the sheet name, the 1-based Excel row of the header and the original
+    Excel letter of every column, so errors and warnings can point at the real
+    cell in the source document even after columns were selected or renamed.
+    """
+
+    sheet_name: str
+    header_row: int
+    column_letters: dict[str, str]
+
+    def cell_reference(self, column_name: str, row_position: int) -> str | None:
+        letter = self.column_letters.get(column_name)
+        if letter is None:
+            return None
+        return f"{letter}{self.header_row + 1 + row_position}"
+
+
+def attach_frame_origin(
+    frame: pd.DataFrame,
+    *,
+    sheet_name: str,
+    header_row: int,
+    column_letters: dict[str, str],
+) -> pd.DataFrame:
+    frame.attrs[ORIGIN_ATTR] = FrameOrigin(
+        sheet_name=sheet_name,
+        header_row=header_row,
+        column_letters=column_letters,
+    )
+    return frame
+
+
+def frame_origin(frame: pd.DataFrame) -> FrameOrigin | None:
+    origin = frame.attrs.get(ORIGIN_ATTR)
+    return origin if isinstance(origin, FrameOrigin) else None
+
+
+def build_cell_locations(
+    *,
+    sheet_name: str,
+    header_row: int,
+    column_letters: Mapping[str, str],
+    row_count: int,
+) -> list[dict[str, str]]:
+    """
+    Per-row mapping of column name to the original ``sheet!CELL`` reference.
+
+    ``header_row`` is the 1-based Excel row of the header; the first data row is
+    ``header_row + 1``.
+    """
+    return [
+        {
+            column_name: f"{sheet_name}!{letter}{header_row + 1 + row_position}"
+            for column_name, letter in column_letters.items()
+        }
+        for row_position in range(row_count)
+    ]
+
+
+def read_sheet_names(source_path: Path) -> tuple[str, ...]:
+    with pd.ExcelFile(source_path) as workbook:
+        return tuple(workbook.sheet_names)
 
 
 def read_workbook_metadata(source_path: Path, *, timezone: tzinfo) -> WorkbookMetadata:
@@ -87,14 +158,62 @@ def read_single_sheet_frame(
     sheet_name: str | int = 0,
 ) -> tuple[pd.DataFrame, WorkbookMetadata]:
     metadata = read_workbook_metadata(source_path, timezone=timezone)
+    engine = _excel_engine(source_path)
     frame = pd.read_excel(
         source_path,
         sheet_name=sheet_name,
         keep_default_na=False,
         na_filter=False,
-        engine=_excel_engine(source_path),
+        engine=engine,
     )
-    return frame, metadata
+    first_column_index = _first_used_column_index(source_path, sheet_name=sheet_name, engine=engine)
+    column_letters = {
+        str(column): _excel_column_name(first_column_index + column_index + 1)
+        for column_index, column in enumerate(frame.columns)
+    }
+    return (
+        attach_frame_origin(
+            frame,
+            sheet_name=_resolved_sheet_name(source_path, sheet_name=sheet_name),
+            header_row=1,
+            column_letters=column_letters,
+        ),
+        metadata,
+    )
+
+
+def _first_used_column_index(
+    source_path: Path,
+    *,
+    sheet_name: str | int,
+    engine: Literal["pyxlsb"] | None,
+) -> int:
+    raw_frame = pd.read_excel(
+        source_path,
+        sheet_name=sheet_name,
+        header=None,
+        nrows=1,
+        keep_default_na=False,
+        na_filter=False,
+        engine=engine,
+    )
+    if raw_frame.empty:
+        return 0
+    header_row = raw_frame.iloc[0]
+    for column_index, value in enumerate(header_row):
+        if str(value).strip():
+            return column_index
+    return 0
+
+
+def _resolved_sheet_name(source_path: Path, *, sheet_name: str | int) -> str:
+    if isinstance(sheet_name, str):
+        return sheet_name
+    with pd.ExcelFile(source_path) as workbook:
+        sheet_names = workbook.sheet_names
+    if 0 <= sheet_name < len(sheet_names):
+        return sheet_names[sheet_name]
+    return str(sheet_name)
 
 
 def select_columns_between(
@@ -136,9 +255,12 @@ def build_dictionary_payload(  # noqa: C901, PLR0912, PLR0913, PLR0915
     column_converters: dict[str, CellValueConverter] | None = None,
     where_columns: dict[str, object] | None = None,
     dropped_columns: tuple[str, ...] = (),
+    cell_locations: Sequence[Mapping[str, str]] | None = None,
 ) -> DictionaryPayload:
     if column_aliases:
         selected_frame = _apply_column_aliases(selected_frame, column_aliases=column_aliases)
+        selected_frame = _rename_frame_origin(selected_frame, column_aliases=column_aliases)
+        cell_locations = _rename_locations(cell_locations, column_aliases=column_aliases)
     selected_columns = tuple(str(column) for column in selected_frame.columns)
     for primary_key_column in primary_key_columns:
         if primary_key_column not in selected_columns:
@@ -151,6 +273,7 @@ def build_dictionary_payload(  # noqa: C901, PLR0912, PLR0913, PLR0915
             raise SourceColumnMissingError(configured_column)
 
     target_columns = tuple(column_name for column_name in selected_columns if column_name not in dropped_columns)
+    origin = frame_origin(selected_frame)
     rows: list[DbRow] = []
     warning_count = 0
     unique_keys: set[tuple[object, ...]] = set()
@@ -159,16 +282,27 @@ def build_dictionary_payload(  # noqa: C901, PLR0912, PLR0913, PLR0915
     configured_column_kinds = column_kinds or {}
     configured_column_converters = column_converters or {}
     for row_number, row in enumerate(selected_frame.itertuples(index=False, name=None), start=2):
+        row_position = row_number - 2
+        row_locations = (
+            cell_locations[row_position] if cell_locations is not None and row_position < len(cell_locations) else None
+        )
         raw_row = dict(zip(selected_columns, row, strict=True))
         if not _row_matches_where(raw_row, where_columns):
             continue
         if _should_skip_raw_filtered_row(raw_row, not_null_filtered_columns):
             continue
+        row_reference = _row_reference(origin, row_locations=row_locations, row_number=row_number)
         prepared_row: DbRow = {}
         for column_index, (column_name, value) in enumerate(zip(selected_columns, row, strict=True), start=1):
             if column_name in dropped_columns:
                 continue
-            cell_reference = f"{_excel_column_name(column_index)}{row_number}"
+            cell_reference = _cell_reference(
+                origin,
+                row_locations=row_locations,
+                column_name=column_name,
+                row_position=row_position,
+                fallback=f"{_excel_column_name(column_index)}{row_number}",
+            )
             nullable = column_name not in primary_key_columns and column_name not in not_null_columns
             converter = configured_column_converters.get(column_name)
             if converter is not None:
@@ -188,7 +322,12 @@ def build_dictionary_payload(  # noqa: C901, PLR0912, PLR0913, PLR0915
                 )
             prepared_value = prepared_row[column_name]
             if not nullable and prepared_value is None and first_required_error is None:
-                first_required_error = RequiredCellValueError(cell_reference, column_name, value)
+                first_required_error = RequiredCellValueError(
+                    cell_reference,
+                    column_name,
+                    value,
+                    source_name=source_name,
+                )
             if column_name in unique_values and prepared_value is not None:
                 first_cell_reference = unique_values[column_name].get(prepared_value)
                 if first_cell_reference is not None:
@@ -197,6 +336,7 @@ def build_dictionary_payload(  # noqa: C901, PLR0912, PLR0913, PLR0915
                         prepared_value,
                         cell_reference,
                         first_cell_reference,
+                        source_name=source_name,
                     )
                 unique_values[column_name][prepared_value] = cell_reference
         if _should_skip_filtered_row(prepared_row, not_null_filtered_columns):
@@ -205,7 +345,11 @@ def build_dictionary_payload(  # noqa: C901, PLR0912, PLR0913, PLR0915
         if primary_key_columns:
             primary_key_value = tuple(prepared_row[column_name] for column_name in primary_key_columns)
             if primary_key_value in unique_keys:
-                raise DuplicatePrimaryKeyError(primary_key_columns, row_number)
+                raise DuplicatePrimaryKeyError(
+                    primary_key_columns,
+                    row_number,
+                    row_reference=row_reference,
+                )
             unique_keys.add(primary_key_value)
         rows.append(prepared_row)
 
@@ -342,7 +486,13 @@ def convert_excel_value(  # noqa: PLR0913
     normalized = normalize_text_value(value)
     if normalized is None:
         return None
-    return _convert_normalized_value(value, normalized=normalized, kind=kind, cell_reference=cell_reference)
+    return _convert_normalized_value(
+        value,
+        normalized=normalized,
+        kind=kind,
+        cell_reference=cell_reference,
+        source_name=source_name,
+    )
 
 
 def _convert_normalized_value(
@@ -351,6 +501,7 @@ def _convert_normalized_value(
     normalized: str,
     kind: ColumnKind,
     cell_reference: str,
+    source_name: str | None = None,
 ) -> DbValue:
     if kind == "text":
         return normalized
@@ -368,7 +519,7 @@ def _convert_normalized_value(
             return converted_datetime.date()
         result = converted_datetime
     except (TypeError, ValueError, OverflowError) as error:
-        raise CellTypeConversionError(cell_reference, kind, value) from error
+        raise CellTypeConversionError(cell_reference, kind, value, source_name=source_name) from error
     else:
         return result
 
@@ -436,12 +587,81 @@ def _convert_datetime_value(value: object, *, normalized: str) -> datetime:
     raise ValueError
 
 
+def excel_column_name(index: int) -> str:
+    return _excel_column_name(index)
+
+
 def _excel_column_name(index: int) -> str:
     result = ""
     while index:
         index, remainder = divmod(index - 1, 26)
         result = chr(65 + remainder) + result
     return result
+
+
+def _rename_locations(
+    cell_locations: Sequence[Mapping[str, str]] | None,
+    *,
+    column_aliases: Mapping[str, str],
+) -> Sequence[Mapping[str, str]] | None:
+    if cell_locations is None:
+        return None
+    return [
+        {column_aliases.get(column_name, column_name): location for column_name, location in row.items()}
+        for row in cell_locations
+    ]
+
+
+def _rename_frame_origin(frame: pd.DataFrame, *, column_aliases: Mapping[str, str]) -> pd.DataFrame:
+    origin = frame_origin(frame)
+    if origin is None:
+        return frame
+    return attach_frame_origin(
+        frame,
+        sheet_name=origin.sheet_name,
+        header_row=origin.header_row,
+        column_letters={
+            column_aliases.get(column_name, column_name): letter
+            for column_name, letter in origin.column_letters.items()
+        },
+    )
+
+
+def _cell_reference(
+    origin: FrameOrigin | None,
+    *,
+    row_locations: Mapping[str, str] | None,
+    column_name: str,
+    row_position: int,
+    fallback: str,
+) -> str:
+    if row_locations is not None:
+        location = row_locations.get(column_name)
+        if location is not None:
+            return location
+    if origin is None:
+        return fallback
+    cell = origin.cell_reference(column_name, row_position)
+    if cell is None:
+        return fallback
+    return f"{origin.sheet_name}!{cell}"
+
+
+def _row_reference(
+    origin: FrameOrigin | None,
+    *,
+    row_locations: Mapping[str, str] | None,
+    row_number: int,
+) -> str | None:
+    if row_locations is not None:
+        for location in row_locations.values():
+            sheet, _, cell = location.rpartition("!")
+            digits = "".join(char for char in cell if char.isdigit())
+            return f"{sheet}!{digits}" if sheet else digits
+        return None
+    if origin is None:
+        return None
+    return f"{origin.sheet_name}!{origin.header_row + 1 + (row_number - 2)}"
 
 
 def _raise_non_integer_value() -> None:

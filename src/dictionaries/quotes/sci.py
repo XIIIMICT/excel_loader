@@ -5,7 +5,13 @@ import pandas as pd
 
 from business_errors import CellTypeConversionError, SourceColumnMissingError
 from dictionary_models import CombinedDictionaryPayload, WorkbookMetadata
-from excel_parser import build_dictionary_payload, convert_excel_value, read_workbook_metadata
+from excel_parser import (
+    build_cell_locations,
+    build_dictionary_payload,
+    convert_excel_value,
+    excel_column_name,
+    read_workbook_metadata,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -34,10 +40,13 @@ SHEET_PATTERNS = {
 
 def build_payload(settings: Settings, source_paths: tuple[Path, ...]) -> CombinedDictionaryPayload:
     frames: list[pd.DataFrame] = []
+    locations: list[dict[str, str]] = []
     metadata: list[WorkbookMetadata] = []
     for source_path in source_paths:
         metadata.append(read_workbook_metadata(source_path, timezone=settings.app_timezone))
-        frames.extend(_read_source_frames(source_path))
+        source_frames, source_locations = _read_source_frames(source_path)
+        frames.extend(source_frames)
+        locations.extend(source_locations)
 
     combined_frame = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=SOURCE_COLUMNS)
     payload = build_dictionary_payload(
@@ -49,12 +58,15 @@ def build_payload(settings: Settings, source_paths: tuple[Path, ...]) -> Combine
         metadata=metadata[0],
         source_name=", ".join(str(path) for path in source_paths),
         column_aliases=SOURCE_COLUMN_ALIASES,
+        cell_locations=locations,
     )
     return CombinedDictionaryPayload(payload=payload, source_metadata=tuple(metadata))
 
 
-def _read_source_frames(source_path: Path) -> list[pd.DataFrame]:
+def _read_source_frames(source_path: Path) -> tuple[list[pd.DataFrame], list[dict[str, str]]]:
     patterns = _sheet_patterns(source_path)
+    frames: list[pd.DataFrame] = []
+    locations: list[dict[str, str]] = []
     with pd.ExcelFile(source_path) as workbook:
         selected_sheets = [
             sheet_name
@@ -65,10 +77,14 @@ def _read_source_frames(source_path: Path) -> list[pd.DataFrame]:
             missing_name = "ожидаемые листы SCI"
             raise SourceColumnMissingError(missing_name)
 
-        return [_read_sheet_frame(workbook, sheet_name) for sheet_name in selected_sheets]
+        for sheet_name in selected_sheets:
+            frame, frame_locations = _read_sheet_frame(workbook, sheet_name)
+            frames.append(frame)
+            locations.extend(frame_locations)
+    return frames, locations
 
 
-def _read_sheet_frame(workbook: pd.ExcelFile, sheet_name: str) -> pd.DataFrame:
+def _read_sheet_frame(workbook: pd.ExcelFile, sheet_name: str) -> tuple[pd.DataFrame, list[dict[str, str]]]:
     raw_frame = cast(
         "pd.DataFrame",
         workbook.parse(sheet_name=sheet_name, header=None, keep_default_na=False, na_filter=False),
@@ -79,6 +95,7 @@ def _read_sheet_frame(workbook: pd.ExcelFile, sheet_name: str) -> pd.DataFrame:
     product_id = raw_frame.iloc[2, 3]
 
     rows: list[dict[str, object]] = []
+    locations: list[dict[str, str]] = []
     for _, source_row in raw_frame.iloc[header_row + 1 :].iterrows():
         pub_date = source_row.iloc[column_indexes["Дата"]]
         product = _clean_component(source_row.iloc[column_indexes["Товар"]])
@@ -94,7 +111,18 @@ def _read_sheet_frame(workbook: pd.ExcelFile, sheet_name: str) -> pd.DataFrame:
                 "product_id": product_id,
             },
         )
-    return pd.DataFrame(rows, columns=SOURCE_COLUMNS)
+        locations.append(
+            build_cell_locations(
+                sheet_name=sheet_name,
+                header_row=header_row + 1,
+                column_letters={
+                    "Дата": excel_column_name(column_indexes["Дата"] + 1),
+                    "CIF China, $/т": excel_column_name(column_indexes["CIF China, $/т"] + 1),
+                },
+                row_count=1,
+            )[0],
+        )
+    return pd.DataFrame(rows, columns=SOURCE_COLUMNS), locations
 
 
 def _find_header_row(frame: pd.DataFrame) -> int:

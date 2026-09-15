@@ -37,7 +37,7 @@ The registry has three groups:
 ### `PATTERN_DICTIONARIES` (all folder files → one table)
 
 - **`quotes_excel_baiinfo`** — files `Baiinfo.<Product>.xlsb` from `quotes/Baiinfo/` (5 products: Меламин, Метанол, Параформальдегид, Пентаэритритол, Уротропин). The first sheet is read, the header is located by `Date`/`Latest Price`/`Unit`; dates look like `04-Jan-22`. `prod_version` is a constant set from the file name; aliases `Date` → `pub_date`, `Latest Price` → `avg_price`; rows with `Unit != USD/T` are skipped, the `Unit` column never reaches the table (`dropped_columns`). PK `pub_date` + `prod_version`.
-- **`quotes_excel_argus_pdf`** — files `Argus PDF*.xlsb` from `quotes/Argus PDF/`. The header is located by `rep_date`/`prod_version`/`min_price`/`avg_price`/`max_price`; `rep_date` is an Excel serial (epoch `1899-12-30`); `min_price`/`avg_price`/`max_price` — `INTEGER`, `avg_price` is required. PK `rep_date` + `prod_version`.
+- **`quotes_excel_argus_pdf`** — files `Argus PDF*.xlsb` from `quotes/Argus PDF/`. The header is located by `rep_date`/`prod_version`/`min_price`/`avg_price`/`max_price`; `rep_date` is an Excel serial (epoch `1899-12-30`); `min_price`/`max_price` — `INTEGER`, `avg_price` — `DOUBLE PRECISION` (fractional prices are kept), `avg_price` is required. PK `rep_date` + `prod_version`.
 
 ## How the engine treats them
 

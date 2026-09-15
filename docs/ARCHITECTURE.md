@@ -96,6 +96,15 @@ After the payload is built: `inspect_storage` → `prepare_storage` when needed 
 
 `dictionary_runner._normalize_payload_columns`: for columns in `columns_to_normalize` the value is converted to `capitalize` or `uppercase` (per `normalization_styles`), and the marker `(н/д)` → `NULL`. This is a separate pass on top of normal conversion.
 
+### Cell coordinates and sheet names in errors
+
+Errors and warnings must point at the real cell in the source workbook, not at a column position after selection/renaming. Two mechanisms carry that:
+
+- `read_single_sheet_frame` attaches a `FrameOrigin` (`excel_parser.frame_origin`) to the frame via `DataFrame.attrs`: the sheet name, the 1-based header row and the original Excel letter of every column. `DataFrame.attrs` survives `loc`-slicing, `copy`, `rename` and `concat`, so `select_columns_between`/`select_columns_excluding_checks` keep the real letters. `build_dictionary_payload` uses the origin to compute `"<sheet>!<letter><row>"`; aliases re-key the origin letters so target names resolve too.
+- Builders that concatenate several files or drop rows (`baiinfo`, `sci`, `argus_pdf`) pass `cell_locations` — a per-row mapping of column name to the original `"<sheet>!<cell>"` reference, built with `excel_parser.build_cell_locations`. These take precedence over the frame origin.
+
+`build_dictionary_payload` threads the file (`source_name`) and the sheet into `CellTypeConversionError`, `RequiredCellValueError`, `DuplicateCellValueError` and `DuplicatePrimaryKeyError`, so a message reads like `quotes_nsi_argus_fc_exception.example.xlsb: dic!A2`. Coordinates are for diagnostics only — never stored in the database.
+
 ## Storage and DDL
 
 `schema_definition.py`, `storage.py`, `postgres.py`.

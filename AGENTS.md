@@ -1,39 +1,59 @@
-# Заметки по проекту
+# AGENTS.md — excel_loader
 
-- Основной Python-код приложения лежит в `src`.
-- Проект загружает Excel-файлы в PostgreSQL. Модуль `quotes_nsi` отвечает за НСИ котировок, `quotes` - за сами котировки, `pd` - за производственную сводку, `sales_op` - за поклиентные операционные планы продаж.
-- Для runtime-настроек используется `config.toml`. Документированный шаблон лежит в `config.example.toml`; `.env` нужен Compose для переменных окружения контейнеров, но не заменяет `config.toml`.
-- Loader внутри compose всегда монтирует `./config.toml` в `/app/config.toml`; отдельный `LOADER_CONFIG_PATH` не нужен. Host PostgreSQL переопределяется переменной `POSTGRES_HOST`. Если `POSTGRES_HOST` задан, значение `common.postgres.host` из TOML игнорируется.
-- Runtime-конфиг разделен на общий блок `common` и верхнеуровневые блоки `quotes_nsi`, `quotes`, `pd` и `sales_op`.
-- Источники данных задаются внутри `[<module>.sources]`, включая `data_dir`. `source = "local"` читает файлы из `data_dir`, `source = "imap"` забирает подходящие вложения из почты. SMTP используется только для уведомлений, а не как источник данных.
-- Для НСИ котировок и обычных котировок используются отдельные реестры `src/dictionaries/quotes_nsi_registry.py` и `src/dictionaries/quotes_registry.py`; соответствующие CLI-флаги: `--quotes-nsi` и `--quotes`.
-- Справочники `quotes_nsi_frequencies` и `quotes_nsi_frequencies_rank` сохраняют исходные текстовые значения, включая пустую строку, `Null` и `-`: для этих таблиц такие значения являются данными, а не маркерами SQL `NULL`.
-- `quotes/Daily Quotes/Ежедневные котировки.xlsb` читается только с листа `base` и заменяет данные `raw.quotes_excel_daily`; `pub_date` хранится как `DATE`, `avg_price` как `DOUBLE PRECISION`.
-- В общем движке `build_dictionary_payload` есть параметр `column_aliases` — словарь `{исходное_имя: целевое_имя}` для переименования колонок; по умолчанию `None`, то есть имена совпадают. Алиасы применяются до всех проверок, поэтому `primary_key_columns`, `not_null_columns`, `not_null_filtered_columns`, `unique_columns` и `column_kinds` задаются в терминах целевых имён. Отсутствие исходной колонки в файле или дублирование целевых имён — ошибка. `daily_excel` мапит `Дата/Продукт/Цена` → `pub_date/prod_version/avg_price`, SCI — `Дата` → `pub_date` и `CIF China, $/т` → `avg_price`; склейка `Товар`+`Марка` в `prod_version` остаётся в билдере SCI.
-- В движке `build_dictionary_payload` есть ещё параметры `where_columns` (словарь `{колонка: ожидаемое_значение}` — строки, не совпадающие после `normalize_text_value`, пропускаются), `column_converters` (словарь `{колонка: callable}` — вызывается вместо обычной конвертации, требуется всё равно `nullable`-проверки) и `dropped_columns` (кортеж колонок, которые не попадают в таблицу, но участвуют в `where`-фильтрации).
-- `Baiinfo.<Продукт>.xlsb` — составной источник модуля `quotes` с паттерн-загрузчиком: файлы из `quotes/Baiinfo/` (5 продуктов: `Меламин`, `Метанол`, `Параформальдегид`, `Пентаэритритол`, `Уротропин`) накапливаются и одной транзакцией заменяют `el.quotes_excel_baiinfo`. Читается первый лист; заголовок ищется по именам полей (`Date`, `Latest Price`, `Unit`); даты вида `04-Jan-22`. Маппинг: `Date` → `pub_date`, `Latest Price` → `avg_price`; `prod_version` задаётся константой по имени файла; строки с `Unit != 'USD/T'` пропускаются, колонка `Unit` в таблицу не попадает. `pub_date` + `prod_version` — первичный ключ.
-- Справочник `quotes_nsi_sources` загружается из листа `dic`: поля `source_code` и `source_fullname` обязательны и уникальны, `source_shortname` обязателен, но не уникален, первичный ключ - `source_code`. Колонка `dest_table` отсутствует в файле и добавляется движком как `UNIQUE` и nullable (всегда `NULL` на загрузке). Текст очищается от внешних и повторяющихся пробелов.
-- Поле `quotes_nsi_prod_versions.is_top_raw_quotes` загружается как `BOOLEAN NOT NULL`. Пустое обязательное значение становится `false`; логические и числовые значения сохраняют обычную семантику, а у текста только строка `false` означает `false`.
-- Общее правило конвертации логических текстовых значений в движке: после обрезки пробелов и приведения к нижнему регистру `y`, `yes` и `да` означают `true`, а `n`, `no` и `нет` — `false`; остальной текст `false` — `false`, всё прочее — `true`.
-- `quotes_nsi_argus_fc_exception` загружается из файла `quotes_nsi/quotes_nsi_argus_fc_exception.xlsb`: берутся колонки от `source_code` до `is_change_scenario_to_fact` включительно, первичный ключ — `source_code + prod_version`, все неключевые колонки nullable. `is_change_report_date_to_pubdate` и `is_change_scenario_to_fact` — логические (`Y`/`N` по общему правилу).
-- `Argus PDF*.xlsb` — составной источник модуля `quotes` с паттерн-загрузчиком: файлы из `quotes/Argus PDF/` накапливаются и одной транзакцией заменяют `el.quotes_excel_argus_pdf`. Читается первый лист; заголовок ищется по именам полей (`rep_date`, `prod_version`, `min_price`, `avg_price`, `max_price`). `rep_date` конвертируется из серийного номера Excel (эпоха 1899-12-30); `min_price`/`avg_price`/`max_price` — `INTEGER`, `avg_price` обязателен. Первичный ключ — `rep_date + prod_version`.
-- SCI-файлы (`quotes/SCI/SCI СКИ.XLSX`, `quotes/SCI/SCI СКС_new.XLSX`) являются составным источником модуля `quotes`: подходящие листы обоих файлов накапливаются и одной транзакцией заменяют `el.quotes_excel_sci`. Заголовок ищется по именам полей, агрегирующие строки без товара или марки пропускаются. Все поля обязательны; повтор ключа `pub_date + prod_version + product_id` считается ошибкой целостности и отменяет загрузку таблицы.
-- Общие SQL-пост-действия задаются массивом `common.post_actions` с путём `path` и состояниями `run_on`: `success`, `partial_success` или `always`. Они выполняются после модульных грантов и обновления материализованных представлений.
-- Метаданные исходных файлов хранятся по одной записи на успешно загруженный файл в `el.excel_loader_sources_history`: `loaded_at`, `src_file`, `dest_table`, `file_modified_at`, `file_modifier`. Модуль определяется по пути источника или целевой таблице. В целевых таблицах файловые метаданные не дублируются.
-- `sales_op` поддерживает локальный источник и IMAP. В `sales_op.sources.data_dir` лежат `Спецификация sales_op_raw_view.xlsb` и месячные подпапки. Файлы классифицируются регулярными выражениями из `src/sales_op/registry.py`; отсутствие типа или обязательного столбца логируется как предупреждение, но не останавливает обработку остальных файлов.
-- За один запуск для каждого типа загружаются файлы всех дат плана. Если для одной даты найдено несколько файлов, выбирается файл с наиболее поздней датой изменения. Файлы не переименовываются и не получают маркеры в имени.
-- Таблицы `sales_op_*` живут в настроенной схеме модуля. Структура колонок и сопоставление русских заголовков читаются из спецификации при каждом запуске. Строки всех выбранных файлов одного типа накапливаются и заменяют данные таблицы один раз за запуск. Пустые/`Null` поля и константы в физические таблицы не попадают; они добавляются в `sales_op_raw_view` как типизированные выражения.
-- Источник даты операционного плана - значение справа от маркера `План продаж :` на первом видимом листе. Строки без производителя или продавца не загружаются. Значения нормализуются: внешние пробелы удаляются, последовательности пробелов сворачиваются, пустые строки и `-` становятся `NULL`. Типы полей приводятся по столбцу `Тип данных` спецификации; ошибки содержат имя файла и координату ячейки. `doc_yearmonth` хранится как `DATE`. По SMTP отправляются только записи JSONL уровней `WARNING`, `ERROR` и `CRITICAL`; предупреждения не делают запуск неуспешным и не блокируют пост-действия.
-- Справочники PD сидируются отдельным скриптом `uv run python src/scripts/seed.py` из `mock_data/pd/Сводка ПД 2026 23.06.2026.example.xlsx`. Обычная загрузка PD сама создает новые активы, сырьевые позиции и показатели по `name`, логирует изменение и продолжает загрузку.
-- `src/scripts/seed.py` - единственный seed-скрипт. Общие helper-функции подготовки схем и таблиц лежат в `src/storage.py`; не создавай новый верхнеуровневый `seed.py`.
-- Таблицы PD живут в настроенной схеме PostgreSQL, обычно `el` в разработке. Текущее хранилище PD: `ref_assets`, `ref_materials`, `ref_indicators`, `pd_data`, `pd_reference_change_log`; `table_code` возвращать не надо.
-- В PD поле `db_name` есть только у `ref_indicators`, потому что только показатели превращаются в столбцы `pd_view`. Справочники активов и сырьевых позиций используют ID и уникальные имена.
-- `pd_data.ordinal_number` считается при каждом парсинге и относится к конкретной дате/файлу отчета, а не к `ref_materials`.
-- `pd_data` хранит исходное `value` как текст и производное `value_double` как `DOUBLE PRECISION`; `pd_view` сейчас разворачивает именно `value_double`.
-- Координаты парсера вроде `xls_row` и `xls_col` можно использовать внутри парсинга и восстановления отложенных пакетов, но их нельзя сохранять в таблицах БД.
-- DDL должен оставаться совместимым с PostgreSQL 14, пока проект явно не поднимет минимальную версию; избегай `UNIQUE NULLS NOT DISTINCT`.
-- Аналитика должна читать `pd_view`, созданную через `CREATE OR REPLACE VIEW`. Если заменить базовую вьюху после изменения формата не удалось, нужно создать первое свободное fallback-имя с повторяющимся постфиксом `_upd` через обычный `CREATE VIEW` и залогировать/отправить изменение формата как ошибку.
-- Логи приложения пишутся в `logs/*.log` в формате JSON Lines. `compose.yaml` рассчитан на внешние PostgreSQL и Loki; проектный Alloy передает логи в `LOKI_URL` через внешнюю Docker-сеть `EXTERNAL_SERVICES_NETWORK`.
-- uv должен проверять TLS через системное хранилище сертификатов (`UV_SYSTEM_CERTS=1`/`--system-certs`). Не возвращай `UV_INSECURE_HOST` и не отключай проверку SSL глобально; корпоративный CA устанавливается в системное хранилище хоста и монтируется из `/etc/ssl/certs`.
-- Считай `README.md` устаревшим, если пользователь явно не попросил ими пользоваться.
-- Ошибки `ruff` и `ty` лучше исправлять в коде. Игноры добавляй только тогда, когда исправление ухудшило бы читаемость или корректность.
+Cheat sheet for agents. Read only the section you need; details — in `docs/*`.
+
+## What it is
+
+An Excel-to-PostgreSQL loader. A single CLI process (`src/main.py`) runs the selected modules, then module post-actions (grants, materialized-view refresh), common post-actions, and optionally an email with the log.
+
+- `quotes_nsi` — quotes reference data, `quotes` — quotes, `pd` — production summary, `sales_op` — per-client operational sales plans.
+- Python 3.14 + **uv**, SQLAlchemy/asyncpg, pandas/openpyxl/pyxlsb. Main code — `src/`.
+- Runs in Compose; PostgreSQL and Loki are external services. Settings — `config.toml` (template `config.example.toml`).
+
+## Commands
+
+| What | Command |
+|---|---|
+| Lint | `uv run ruff check` |
+| Format | `uv run ruff format` |
+| Types | `uv run ty check` |
+| Everything at once | `just check` |
+| Tests | `just test` |
+| CLI inside compose | `just loader --quotes` · `just loader --pd --source local` |
+| Build image + CLI | `just loader-build …` |
+| Postgres for standalone | `just db-standalone` |
+| Seed PD reference data | `just seed` |
+| Logs (Alloy / Loki+Grafana) | `just logging` · `just logging-standalone` |
+
+Default modules — all four. `--quotes-nsi`, `--quotes`, `--pd`, `--sales-op` narrow the set; `--source local|imap` overrides the source for the selected modules.
+
+## Landmines (critical!)
+
+1. **`.gitignore` is deny-all with a whitelist.** A new root file or folder won't reach git until `!path` is added (`!/docs/` and `!/docs/**` already exist). Nested `.gitignore` files work the same way.
+2. **`README.md` is outdated** — don't rely on it unless explicitly asked.
+3. **`quotes_nsi_frequencies` and `quotes_nsi_frequencies_rank` keep the source text verbatim**, including the empty string, `Null` and `-`. These are data, not SQL `NULL` markers; don't "clean" them with normal normalization (`preserve_text_values`).
+4. **Aliases in `build_dictionary_payload` are applied before all checks.** `primary_key_columns`, `not_null_columns`, `not_null_filtered_columns`, `unique_columns`, `column_kinds`, `where_columns` are expressed in **target** names. A missing source column or duplicated target names is an error.
+5. **Boolean text values:** after `strip().lower()` — `y`/`yes`/`да` → `true`, `n`/`no`/`нет` → `false`, the other text `false` → `false`, everything else → `true`. An empty required (NOT NULL) field → `false`, an empty nullable one → `NULL`.
+6. **DDL is compatible with PostgreSQL 14.** Don't use `UNIQUE NULLS NOT DISTINCT` or any features newer than 14 until the minimum version is explicitly bumped.
+7. **Parser coordinates (`xls_row`, `xls_col`) are never stored in the DB** — only inside parsing and PD deferred-package recovery.
+8. **`pd_view` is created via `CREATE OR REPLACE VIEW`.** If the replace fails, create the first free fallback name with a repeated `_upd` suffix (`CREATE VIEW`) and log/send the format change as an error.
+9. **Compose always mounts `./config.toml` to `/app/config.toml`.** `LOADER_CONFIG_PATH` is unnecessary. `POSTGRES_HOST` (when set) overrides `common.postgres.host` from the TOML.
+10. **`src/scripts/seed.py` is the only seed script.** Shared schema/table helpers live in `src/storage.py`; don't create a new top-level `seed.py`.
+
+## Working rules
+
+- **Don't commit or push without an explicit request.** Before git operations — `git status` and the current branch.
+- **Before delivery:** `just check` and `just test` green. Fix `ruff`/`ty` errors in code; add ignores only when a fix would hurt readability or correctness.
+- **uv TLS:** verify through the system certificate store (`UV_SYSTEM_CERTS=1`) — already set in the `justfile`. Don't bring back `UV_INSECURE_HOST`, don't disable SSL verification globally; the corporate CA is mounted from `/etc/ssl/certs`.
+- **Documentation is part of the change:** changed behavior/mapping/config — update `AGENTS.md` and the relevant file in `docs/`. Write landmines down immediately.
+- **Minimal changes:** follow the file's style, don't add new entities without need.
+
+## Documentation
+
+- `docs/ARCHITECTURE.md` — the shared dictionary engine, config, sources (local/IMAP), storage and DDL, source history, post-actions, logs and email.
+- `docs/QUOTES.md` — the `quotes_nsi` and `quotes` modules: registries, files, mappings, primary keys.
+- `docs/PD.md` — `pd`: schema, parsing, `value_double`, `pd_view` and fallback, deferred packages.
+- `docs/SALES_OP.md` — `sales_op`: specification, file classification, normalization, `sales_op_raw_view`.
+- `docs/WORKFLOW.md` — environment, quality, prek, tests, languages, commits and branching.
+
+**When behavior changes, update the relevant file in `docs/` — that's a requirement, not a wish.**

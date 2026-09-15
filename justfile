@@ -1,4 +1,5 @@
 set windows-shell := ["powershell.exe", "-Command"]
+set dotenv-load := true
 
 export UV_SYSTEM_CERTS := "1"
 
@@ -27,4 +28,21 @@ seed:
     uv run src/scripts/seed.py
 
 deps:
-    uv --system-certs sync
+    uv sync
+
+lint:
+    uv run ruff check
+
+format:
+    uv run ruff format
+
+typecheck:
+    uv run ty check
+
+test:
+    uv run pytest -q
+
+check: format
+    uv run ruff check
+    uv run ty check
+    uv run pytest -q

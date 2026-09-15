@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+jobs:
+  config:
+    name: Workflow and Compose validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate GitHub Actions
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.7 -color
+      - name: Validate Compose
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: strong_password
+          POSTGRES_DB: dwh
+        run: |
+          cp .env.example .env
+          docker compose --profile standalone config --quiet
+
+  quality:
+    name: Lint and types
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          python-version: "3.14"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --locked
+      - run: uv run --no-sync ruff check
+      - run: uv run --no-sync ruff format --check
+      - run: uv run --no-sync ty check
+
+  tests:
+    name: Unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      COVERAGE_FILE: coverage-data
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          python-version: "3.14"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --locked
+      - name: Run tests with coverage
+        run: >-
+          uv run --no-sync pytest -q
+          --cov=src --cov-branch --cov-report=term --cov-report=xml:coverage.xml
+          --junitxml=test-results.xml --durations=10
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: test-reports
+          path: |
+            coverage.xml
+            test-results.xml
+          retention-days: 7
+
+  production:
+    name: Production image
+    needs: config
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Build image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: prod
+          load: true
+          tags: excel-loader:ci
+          cache-from: type=gha,scope=excel-loader
+          cache-to: type=gha,mode=max,scope=excel-loader
+      - name: Smoke-check the entrypoint
+        run: docker run --rm --entrypoint python excel-loader:ci -m compileall src
+      - name: Export tested image
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: docker save -o production-image.tar excel-loader:ci
+      - uses: actions/upload-artifact@v7
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          name: production-image
+          path: production-image.tar
+          retention-days: 1
+          compression-level: 0
+
+  required:
+    name: CI required
+    if: always()
+    needs: [config, quality, tests, production]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    steps:
+      - name: Require every check to succeed
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: jq -e 'all(.[]; .result == "success")' <<< "$RESULTS"

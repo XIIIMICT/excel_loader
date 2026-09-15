@@ -1,5 +1,5 @@
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pandas as pd
 
@@ -54,22 +54,25 @@ def build_payload(settings: Settings, source_paths: tuple[Path, ...]) -> Combine
 
 
 def _read_source_frames(source_path: Path) -> list[pd.DataFrame]:
-    workbook = pd.ExcelFile(source_path)
     patterns = _sheet_patterns(source_path)
-    selected_sheets = [
-        sheet_name
-        for sheet_name in workbook.sheet_names
-        if any(pattern.search(_normalize_text(sheet_name)) for pattern in patterns)
-    ]
-    if len(selected_sheets) != len(patterns):
-        missing_name = "ожидаемые листы SCI"
-        raise SourceColumnMissingError(missing_name)
+    with pd.ExcelFile(source_path) as workbook:
+        selected_sheets = [
+            sheet_name
+            for sheet_name in workbook.sheet_names
+            if any(pattern.search(_normalize_text(sheet_name)) for pattern in patterns)
+        ]
+        if len(selected_sheets) != len(patterns):
+            missing_name = "ожидаемые листы SCI"
+            raise SourceColumnMissingError(missing_name)
 
-    return [_read_sheet_frame(source_path, sheet_name) for sheet_name in selected_sheets]
+        return [_read_sheet_frame(workbook, sheet_name) for sheet_name in selected_sheets]
 
 
-def _read_sheet_frame(source_path: Path, sheet_name: str) -> pd.DataFrame:
-    raw_frame = pd.read_excel(source_path, sheet_name=sheet_name, header=None, keep_default_na=False, na_filter=False)
+def _read_sheet_frame(workbook: pd.ExcelFile, sheet_name: str) -> pd.DataFrame:
+    raw_frame = cast(
+        "pd.DataFrame",
+        workbook.parse(sheet_name=sheet_name, header=None, keep_default_na=False, na_filter=False),
+    )
     header_row = _find_header_row(raw_frame)
     header_values = [_normalize_text(value) for value in raw_frame.iloc[header_row]]
     column_indexes = {name: header_values.index(_normalize_text(name)) for name in HEADER_NAMES}

@@ -51,9 +51,17 @@ files = '.ya?ml$'
 
 [[repos.hooks]]
 id = "end-of-file-fixer"
-files = '^(\.github/.*|README\.md|LICENSE|justfile|compose\.ya?ml|\.env\.example|\.gitignore)$'
+types = ["text"]
 
 [[repos.hooks]]
 id = "trailing-whitespace"
-files = '^(\.github/.*|README\.md|LICENSE|justfile|compose\.ya?ml|\.env\.example|\.gitignore)$'
+types = ["text"]
 
+[[repos.hooks]]
+id = "mixed-line-ending"
+args = ["--fix=lf"]
+types = ["text"]
+
+[[repos.hooks]]
+id = "fix-byte-order-marker"
+types = ["text"]

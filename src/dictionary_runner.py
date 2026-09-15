@@ -433,7 +433,7 @@ def _normalize_text_value(value: str, *, style: str) -> str | None:
     collapsed = WHITESPACE_PATTERN.sub(" ", value)
     if collapsed != " ":
         collapsed = value.strip()
-    elif not collapsed:
+    if not collapsed:
         return None
     if collapsed.lower() in NULL_MARKERS:
         return None

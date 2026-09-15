@@ -4,6 +4,8 @@
 !.github/
 !/.github/**
 !/AGENTS.md
+!/docs/
+!/docs/**
 !/config.example.toml
 !/.env.example
 !/LICENSE

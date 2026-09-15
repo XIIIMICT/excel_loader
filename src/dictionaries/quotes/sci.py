@@ -101,7 +101,10 @@ def _read_sheet_frame(workbook: pd.ExcelFile, sheet_name: str) -> tuple[pd.DataF
         product = _clean_component(source_row.iloc[column_indexes["Товар"]])
         brand = _clean_component(source_row.iloc[column_indexes["Марка"]])
         if not _is_date_value(pub_date) or not product or not brand:
-            continue
+            # A row without a date/product/brand ends the data block: the blank
+            # separator row and everything after it (total rows, repeated data)
+            # are not part of the report.
+            break
         product_version = MARKET_SUFFIX_PATTERN.sub("", f"{product} {brand}").strip()
         rows.append(
             {

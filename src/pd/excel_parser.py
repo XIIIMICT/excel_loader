@@ -66,8 +66,8 @@ def parse_report(source_path: str | Path, *, loaded_at: datetime) -> ParsedRepor
     formula_workbook = _load_workbook(path, data_only=False)
     data_workbook = _load_workbook(path, data_only=True)
     try:
-        formula_sheet = _select_last_sheet(formula_workbook)
-        data_sheet = _select_last_sheet(data_workbook)
+        formula_sheet = _select_first_sheet(formula_workbook)
+        data_sheet = _select_first_sheet(data_workbook)
 
         assets, raw_materials = _parse_assets_and_raw_materials(
             formula_sheet=formula_sheet,
@@ -117,12 +117,12 @@ def _load_workbook(path: Path, *, data_only: bool) -> Workbook:
         return load_workbook(path, data_only=data_only, read_only=False)
 
 
-def _select_last_sheet(workbook: Workbook) -> Worksheet:
+def _select_first_sheet(workbook: Workbook) -> Worksheet:
     if not workbook.worksheets:
         msg = "В файле не найдено ни одного листа."
         raise ValueError(msg)
 
-    return workbook.worksheets[-1]
+    return workbook.worksheets[0]
 
 
 def _parse_report_indicators(

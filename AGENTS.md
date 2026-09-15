@@ -39,6 +39,7 @@ Default modules — all four. `--quotes-nsi`, `--quotes`, `--pd`, `--sales-op` n
 8. **`pd_view` is created via `CREATE OR REPLACE VIEW`.** If the replace fails, create the first free fallback name with a repeated `_upd` suffix (`CREATE VIEW`) and log/send the format change as an error.
 9. **Compose always mounts `./config.toml` to `/app/config.toml`.** `LOADER_CONFIG_PATH` is unnecessary. `POSTGRES_HOST` (when set) overrides `common.postgres.host` from the TOML.
 10. **`src/scripts/seed.py` is the only seed script.** Shared schema/table helpers live in `src/storage.py`; don't create a new top-level `seed.py`.
+11. **PD parses only the first sheet** of a workbook (`_select_first_sheet`); other sheets are ignored. SCI stops reading at the first row without a date/product/brand — a blank separator row ends the data block rather than being treated as data.
 
 ## Working rules
 

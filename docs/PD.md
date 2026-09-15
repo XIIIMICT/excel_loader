@@ -18,7 +18,7 @@ The production-summary module. Unlike the quote dictionaries, PD is an **increme
 
 ## Parsing (`parse_report`)
 
-The **last sheet** of the workbook is read, in two passes: `data_only=False` (for bold font and formulas) and `data_only=True` (values). Constants: column `D` — ordinal number, `E` — name, values — from `F` to `AI`, report date — `I4`, indicator header rows — `6` and `7`, first possible asset row — `10`, at most 3 indicator-name levels.
+The **first sheet** of the workbook is read, in two passes: `data_only=False` (for bold font and formulas) and `data_only=True` (values). Only the first sheet is parsed — any other sheets are ignored. Constants: column `D` — ordinal number, `E` — name, values — from `F` to `AI`, report date — `I4`, indicator header rows — `6` and `7`, first possible asset row — `10`, at most 3 indicator-name levels.
 
 - **Asset** — a row whose `E` name is non-empty, `D` has no number and the `E` name cell is bold (bold comes from the formula workbook). The asset name is stripped of surrounding quotes/«» and a tail like `(на 01.01.26)`.
 - **Material/nomenclature** — rows after an asset with a non-empty `E` name. The hierarchy is derived from the number of leading spaces in the name; this yields `material_path` (e.g. `(Group, Item)`) and `parent_name` (the parent path's last element). Names `Орехо-Зуево`, `Орехово-Зуево`, `Губаха` are skipped.

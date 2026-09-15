@@ -3,13 +3,14 @@ FROM ghcr.io/astral-sh/uv:python${PYTHON_VERSION}-alpine AS base
 WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 \
     UV_PYTHON_DOWNLOADS=0 \
-    UV_SYSTEM_CERTS=1 \
-    UV_LINK_MODE=copy 
+    UV_LINK_MODE=copy
 
 FROM base AS deps
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-project
+    uv sync --frozen --no-dev --no-install-project \
+    --allow-insecure-host pypi.org \
+    --allow-insecure-host files.pythonhosted.org
 
 FROM python:${PYTHON_VERSION}-alpine AS prod
 WORKDIR /app

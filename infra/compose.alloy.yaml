@@ -10,10 +10,5 @@ services:
       - /etc/ssl/certs:/etc/ssl/certs:ro
       - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
       - ../logs:/var/log/excel_loader:ro
-    networks: [net, external-services]
+    networks: [net]
     ports: ["12345:12345"]
-
-networks:
-  external-services:
-    external: true
-    name: ${EXTERNAL_SERVICES_NETWORK:?Нужно указать EXTERNAL_SERVICES_NETWORK в окружении или .env}

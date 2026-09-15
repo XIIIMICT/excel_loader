@@ -1,3 +1,5 @@
+name: excel_loader
+
 include:
   - path: ./infra/compose.external-services.yaml
   - path: ./infra/compose.alloy.yaml

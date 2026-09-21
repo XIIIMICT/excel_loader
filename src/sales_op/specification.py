@@ -27,7 +27,6 @@ SOURCE_TABLE_ROW = 8
 SOURCE_FILE_MASK_ROW = 7
 TABLE_SCHEMA_PREFIX = "el."
 TABLE_NAME_PREFIX = "sales_op_"
-MULTIPLE_BACKSLASHES_PATTERN = re.compile(r"\\{2,}")
 VALID_TARGET_NAME_PATTERN = re.compile(r"^[a-z_][a-z0-9_]*$")
 TYPE_MAPPING: dict[str, ColumnKind] = {
     "date": "date",
@@ -118,14 +117,19 @@ def _read_sources(rows: list[list[object]]) -> list[tuple[str, int, str]]:
         table_reference = _cell_value(rows, SOURCE_TABLE_ROW, column_index)
         if not isinstance(table_reference, str) or not table_reference.strip():
             continue
+        file_pattern = _file_pattern(rows, column_index, source_code=table_reference)
+        if file_pattern is None:
+            # No file mask -> the source is not loaded: no files are searched
+            # for and no target table is created.
+            continue
         source_code = _source_code(table_reference)
         if source_code in seen_codes:
             message = f"источник {source_code!r} указан в спецификации более одного раза"
             raise sales_op_error(message)
         seen_codes.add(source_code)
-        sources.append((source_code, column_index, _file_pattern(rows, column_index, source_code=source_code)))
+        sources.append((source_code, column_index, file_pattern))
     if not sources:
-        message = "в спецификации не найдены источники с таблицей КХД"
+        message = "в спецификации не найдены источники с таблицей КХД и маской файла"
         raise sales_op_error(message)
     return sources
 
@@ -140,14 +144,11 @@ def _source_code(table_reference: str) -> str:
     return table_name
 
 
-def _file_pattern(rows: list[list[object]], column_index: int, *, source_code: str) -> str:
+def _file_pattern(rows: list[list[object]], column_index: int, *, source_code: str) -> str | None:
     raw_pattern = _cell_value(rows, SOURCE_FILE_MASK_ROW, column_index)
     if not isinstance(raw_pattern, str) or not raw_pattern.strip():
-        message = f"для источника {source_code!r} не задана маска файла (регулярное выражение)"
-        raise sales_op_error(message)
-    # The specification stores escaped backslashes ("\\."); collapse them so the
-    # mask matches a literal dot instead of a backslash.
-    pattern = MULTIPLE_BACKSLASHES_PATTERN.sub(lambda _match: "\\", raw_pattern.strip())
+        return None
+    pattern = raw_pattern.strip()
     try:
         re.compile(pattern)
     except re.error as error:

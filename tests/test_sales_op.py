@@ -2,7 +2,7 @@ from pathlib import Path
 
 from excel_parser import convert_excel_value
 from sales_op.excel_parser import _bind_source_columns, parse_sales_op_workbook
-from sales_op.specification import SPECIFICATION_FILE_NAME, read_sales_op_specification
+from sales_op.specification import SPECIFICATION_FILE_NAME, _read_sources, read_sales_op_specification
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 MOCK_SALES_OP_DIR = PROJECT_DIR / "mock_data" / "sales_op"
@@ -68,10 +68,22 @@ class TestSalesOpSpecification:
     def test_file_patterns_come_from_the_specification(self) -> None:
         specification = read_sales_op_specification(MOCK_SALES_OP_DIR / SPECIFICATION_FILE_NAME)
 
-        # The specification stores escaped backslashes; the parser collapses them.
         assert specification.sources["mfk"].file_pattern.endswith(r"\.xlsx$")
         assert specification.sources["mfk"].matches_file_name("МФК_Поклиентный план_июль.xlsx")
         assert not specification.sources["mfk"].matches_file_name("БСК_сода_план.xlsx")
+
+    def test_source_without_file_mask_is_skipped(self) -> None:
+        rows: list[list[object]] = [[None] * 11 for _ in range(9)]
+        rows[0][7] = "Источник с маской"
+        rows[8][7] = "el.sales_op_bsk_soda"
+        rows[7][7] = r"^(?=.*сода).*\.xlsx$"
+        rows[0][9] = "Источник без маски"
+        rows[8][9] = "el.sales_op_bsk_mth"
+        rows[7][9] = None
+
+        sources = _read_sources(rows)
+
+        assert [code for code, _index, _pattern in sources] == ["bsk_soda"]
 
     def test_physical_table_contains_only_source_fields(self) -> None:
         specification = read_sales_op_specification(MOCK_SALES_OP_DIR / SPECIFICATION_FILE_NAME)

@@ -40,6 +40,7 @@ Default modules — all four. `--quotes-nsi`, `--quotes`, `--pd`, `--sales-op` n
 9. **Compose always mounts `./config.toml` to `/app/config.toml`.** `LOADER_CONFIG_PATH` is unnecessary. `POSTGRES_HOST` (when set) overrides `common.postgres.host` from the TOML.
 10. **`src/scripts/seed.py` is the only seed script.** Shared schema/table helpers live in `src/storage.py`; don't create a new top-level `seed.py`.
 11. **PD parses only the first sheet** of a workbook (`_select_first_sheet`); other sheets are ignored. SCI stops reading at the first row without a date/product/brand — a blank separator row ends the data block rather than being treated as data.
+12. **`sales_op` is spec-driven.** Source codes, KHD tables and file masks live in `Спецификация sales_op_raw_view.xlsb` (sheet `спека`), not in code (`registry.py` was removed). The file masks in the spec use doubled backslashes (`\\.xlsx$`); the parser collapses them to `\.` before matching (case-insensitively). The `Not Nullable` column says whether a target column is required: empty/falsy → optional (absent column or empty value → `NULL`), truthy (`Y`/`yes`/`да`/`true`/`1`/`+`) → the column must exist and every kept row must have a value, otherwise the file fails. The producer/seller row filter runs before the Not Nullable check.
 
 ## Working rules
 

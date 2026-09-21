@@ -2,7 +2,6 @@ from pathlib import Path
 
 from excel_parser import convert_excel_value
 from sales_op.excel_parser import _bind_source_columns, parse_sales_op_workbook
-from sales_op.registry import SOURCE_DEFINITIONS_BY_CODE
 from sales_op.specification import SPECIFICATION_FILE_NAME, read_sales_op_specification
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
@@ -15,27 +14,42 @@ def test_preserved_text_values_are_not_normalized() -> None:
     assert convert_excel_value("-", kind="text", cell_reference="A3", preserve_text=True) == "-"
 
 
-def test_missing_sales_op_column_is_left_unbound() -> None:
+def test_missing_optional_sales_op_column_is_left_unbound() -> None:
     specification = read_sales_op_specification(MOCK_SALES_OP_DIR / SPECIFICATION_FILE_NAME)
     mappings = specification.sources["mfk"].mappings
 
     bound_columns, missing_headers = _bind_source_columns(
         mappings,
-        headers=("Производитель", "Продавец"),
+        headers=("Производитель", "Продавец", "Номенклатурная группа"),
         first_column=0,
     )
 
     assert bound_columns["producer_code"] == 0
     assert bound_columns["seller_code"] == 1
+    # An optional column may be absent: it is left unbound and becomes NULL.
     assert "nomenclative_name" not in bound_columns
-    assert "Продукт" in missing_headers
+    assert missing_headers == ()
+
+
+def test_missing_not_nullable_sales_op_column_is_reported() -> None:
+    specification = read_sales_op_specification(MOCK_SALES_OP_DIR / SPECIFICATION_FILE_NAME)
+    mappings = specification.sources["mfk"].mappings
+
+    _bound_columns, missing_headers = _bind_source_columns(
+        mappings,
+        headers=("Продавец",),
+        first_column=0,
+    )
+
+    # producer_code and nomenclative_group_name are "Not Nullable" -> required.
+    assert set(missing_headers) == {"Производитель", "Номенклатурная группа"}
 
 
 class TestSalesOpSpecification:
     def test_reads_types_and_all_sources(self) -> None:
         specification = read_sales_op_specification(MOCK_SALES_OP_DIR / SPECIFICATION_FILE_NAME)
 
-        assert len(specification.columns) == 52
+        assert len(specification.columns) == 54
         assert {column.name: column.kind for column in specification.columns}["quantity_t"] == "float"
         assert set(specification.sources) == {
             "mfk",
@@ -45,6 +59,19 @@ class TestSalesOpSpecification:
             "bsk_obn",
             "bsk_soda",
         }
+        assert {column.name for column in specification.columns if not column.nullable} == {
+            "doc_yearmonth",
+            "producer_code",
+            "nomenclative_group_name",
+        }
+
+    def test_file_patterns_come_from_the_specification(self) -> None:
+        specification = read_sales_op_specification(MOCK_SALES_OP_DIR / SPECIFICATION_FILE_NAME)
+
+        # The specification stores escaped backslashes; the parser collapses them.
+        assert specification.sources["mfk"].file_pattern.endswith(r"\.xlsx$")
+        assert specification.sources["mfk"].matches_file_name("МФК_Поклиентный план_июль.xlsx")
+        assert not specification.sources["mfk"].matches_file_name("БСК_сода_план.xlsx")
 
     def test_physical_table_contains_only_source_fields(self) -> None:
         specification = read_sales_op_specification(MOCK_SALES_OP_DIR / SPECIFICATION_FILE_NAME)
@@ -59,11 +86,11 @@ class TestSalesOpSpecification:
         assert "user_name" not in columns
 
     def test_parses_first_visible_sheet_and_normalizes_values(self) -> None:
-        definition = SOURCE_DEFINITIONS_BY_CODE["bsk_polymers"]
+        specification = read_sales_op_specification(MOCK_SALES_OP_DIR / SPECIFICATION_FILE_NAME)
+        definition = specification.sources["bsk_polymers"]
         source_path = next(
             path for path in (MOCK_SALES_OP_DIR / "2026-07").glob("*.xlsx") if definition.matches_file_name(path.name)
         )
-        specification = read_sales_op_specification(MOCK_SALES_OP_DIR / SPECIFICATION_FILE_NAME)
 
         parsed = parse_sales_op_workbook(
             source_path,

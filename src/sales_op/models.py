@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -29,16 +30,27 @@ class SalesOpColumnMapping:
     mode: MappingMode
     source_name: str | None = None
     constant: DbValue = None
+    required: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class SalesOpSourceSpecification:
     code: str
+    file_pattern: str
     mappings: tuple[SalesOpColumnMapping, ...]
 
     @property
     def table_columns(self) -> tuple[ColumnDefinition, ...]:
         return tuple(mapping.column for mapping in self.mappings if mapping.mode in {"source", "plan_date"})
+
+    @property
+    def required_columns(self) -> tuple[ColumnDefinition, ...]:
+        return tuple(
+            mapping.column for mapping in self.mappings if mapping.required and mapping.mode in {"source", "plan_date"}
+        )
+
+    def matches_file_name(self, file_name: str) -> bool:
+        return re.fullmatch(self.file_pattern, file_name, flags=re.IGNORECASE) is not None
 
 
 @dataclass(frozen=True, slots=True)

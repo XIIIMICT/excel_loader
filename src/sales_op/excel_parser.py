@@ -85,15 +85,14 @@ def parse_sales_op_workbook(
             headers=tuple(headers[first_column : last_column + 1]),
             first_column=first_column,
         )
+        if missing_headers:
+            message = f"в файле {source_path} отсутствуют обязательные столбцы из спецификации: " + ", ".join(
+                repr(header) for header in missing_headers
+            )
+            raise sales_op_error(message)
 
         rows: list[DbRow] = []
-        warning_count = len(missing_headers)
-        if missing_headers:
-            LOGGER.warning(
-                "План продаж: в файле %s отсутствуют столбцы из спецификации: %s. Значения заменены на NULL.",
-                source_path,
-                ", ".join(repr(header) for header in missing_headers),
-            )
+        warning_count = 0
         for row_number, raw_row in enumerate(
             worksheet.iter_rows(min_row=header_row + 1, values_only=True),
             start=header_row + 1,
@@ -105,7 +104,15 @@ def parse_sales_op_workbook(
             )
             warning_count += row_warning_count
             if prepared_row.get(PRODUCER_TARGET) is None or prepared_row.get(SELLER_TARGET) is None:
+                # A row without a producer or seller is not a plan row; the
+                # "Not Nullable" check applies only to the rows we keep.
                 continue
+            _require_not_nullable(
+                prepared_row,
+                source_specification.mappings,
+                row_number=row_number,
+                source_name=str(source_path),
+            )
             rows.append(prepared_row)
 
         return ParsedSalesOpFile(
@@ -202,7 +209,10 @@ def _bind_source_columns(
     for normalized_name, source_mappings in grouped_mappings.items():
         source_positions = positions.get(normalized_name, [])
         if not source_positions:
-            missing_headers.append(source_mappings[0].source_name or normalized_name)
+            # An optional column may be absent (its values become NULL); a
+            # "Not Nullable" column must exist in the workbook.
+            if any(mapping.required for mapping in source_mappings):
+                missing_headers.append(source_mappings[0].source_name or normalized_name)
             continue
         for index, mapping in enumerate(source_mappings):
             position = source_positions[index] if index < len(source_positions) else source_positions[0]
@@ -240,6 +250,21 @@ def _prepare_row(
             source_name=context.source_name,
         )
     return prepared, warning_count
+
+
+def _require_not_nullable(
+    row: DbRow,
+    mappings: tuple[SalesOpColumnMapping, ...],
+    *,
+    row_number: int,
+    source_name: str,
+) -> None:
+    for mapping in mappings:
+        if not mapping.required or mapping.mode not in {"source", "plan_date"}:
+            continue
+        if row.get(mapping.column.name) is None:
+            message = f"в файле {source_name} обязательное поле {mapping.column.name!r} пусто в строке {row_number}"
+            raise sales_op_error(message)
 
 
 @dataclass(frozen=True, slots=True)

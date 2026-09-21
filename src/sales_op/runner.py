@@ -13,8 +13,7 @@ from sales_op.models import (
     SalesOpError,
     SelectedSalesOpFile,
 )
-from sales_op.registry import SOURCE_DEFINITIONS
-from sales_op.specification import SPECIFICATION_FILE_NAME, read_sales_op_specification
+from sales_op.specification import SPECIFICATION_FILE_NAME, read_sales_op_specification, source_table_name
 from schema_definition import build_dictionary_table
 from source_history import prepare_source_history
 from source_resolver import SourceError, resolve_all_pattern_sources
@@ -69,6 +68,7 @@ async def run_sales_op(settings: Settings) -> SalesOpRunSummary:
         ) as source_files:
             selected_files, selection_warnings, inspection_failures = _select_source_files(
                 source_files,
+                specification_sources=specification.sources,
                 timezone=settings.app_timezone,
             )
             rows_by_source, history_by_source, parse_warnings, parse_failures = _parse_selected_files(
@@ -114,13 +114,14 @@ async def run_sales_op(settings: Settings) -> SalesOpRunSummary:
 def _select_source_files(
     source_files: tuple[SourceFile, ...],
     *,
+    specification_sources: dict[str, SalesOpSourceSpecification],
     timezone: tzinfo,
 ) -> tuple[tuple[SelectedSalesOpFile, ...], int, int]:
     candidates: dict[str, list[SelectedSalesOpFile]] = defaultdict(list)
     failures = 0
     for source_file in source_files:
         original_name = source_file.original_name or source_file.path.name
-        source_code = _classify_file(original_name)
+        source_code = _classify_file(original_name, specification_sources=specification_sources)
         if source_code is None:
             continue
         try:
@@ -144,11 +145,15 @@ def _select_source_files(
 
     selected: list[SelectedSalesOpFile] = []
     warnings = 0
-    for definition in SOURCE_DEFINITIONS:
-        source_candidates = candidates[definition.code]
+    for source_code, source_specification in specification_sources.items():
+        source_candidates = candidates[source_code]
         if not source_candidates:
             warnings += 1
-            LOGGER.warning("План продаж %s: файлы по шаблону %r не найдены.", definition.code, definition.file_pattern)
+            LOGGER.warning(
+                "План продаж %s: файлы по шаблону %r не найдены.",
+                source_code,
+                source_specification.file_pattern,
+            )
             continue
         by_date: dict[object, list[SelectedSalesOpFile]] = defaultdict(list)
         for candidate in source_candidates:
@@ -159,7 +164,7 @@ def _select_source_files(
             if len(date_candidates) > 1:
                 LOGGER.warning(
                     "План продаж %s: для даты %s найдено несколько файлов, выбран самый поздний: %s.",
-                    definition.code,
+                    source_code,
                     plan_date,
                     winner.display_name,
                 )
@@ -188,13 +193,13 @@ def _parse_selected_files(
             LOGGER.exception("План продаж: файл %s не обработан.", selected_file.display_name)
             continue
         rows_by_source[selected_file.source_code].extend(parsed.rows)
-        definition = next(item for item in SOURCE_DEFINITIONS if item.code == selected_file.source_code)
+        source_specification = specification_sources[selected_file.source_code]
         metadata = selected_file.metadata
         history_by_source[selected_file.source_code].append(
             SourceHistoryEntry(
                 loaded_at=metadata.loaded_at,
                 src_file=selected_file.history_reference,
-                dest_table=f"{definition.table_name}",
+                dest_table=source_table_name(source_specification.code),
                 file_modified_at=metadata.file_modified_at,
                 file_modifier=metadata.file_modifier,
             ),
@@ -222,12 +227,12 @@ async def _replace_tables(
     loaded_tables: list[Table] = []
     failures = 0
     history_table = await prepare_source_history(engine, users_to_grant=settings.sales_op_grant_select_users)
-    for definition in SOURCE_DEFINITIONS:
-        if definition.code not in rows_by_source:
+    for source_code, source_specification in specification.sources.items():
+        if source_code not in rows_by_source:
             continue
         table = build_dictionary_table(
-            table_reference=settings.sales_op_table_schema_reference(definition.table_name),
-            columns=specification.sources[definition.code].table_columns,
+            table_reference=settings.sales_op_table_schema_reference(source_table_name(source_code)),
+            columns=source_specification.table_columns,
             primary_key_columns=(),
         )
         try:
@@ -242,12 +247,12 @@ async def _replace_tables(
                     file_modified_at=entry.file_modified_at,
                     file_modifier=entry.file_modifier,
                 )
-                for entry in history_by_source.get(definition.code, ())
+                for entry in history_by_source.get(source_code, ())
             )
             inserted = await replace_table_rows(
                 engine,
                 table,
-                rows=rows_by_source[definition.code],
+                rows=rows_by_source[source_code],
                 history_table=history_table,
                 history_entries=entries,
             )
@@ -270,8 +275,8 @@ async def _replace_tables(
     return tuple(loaded_tables), failures
 
 
-def _classify_file(file_name: str) -> str | None:
-    for definition in SOURCE_DEFINITIONS:
-        if definition.matches_file_name(file_name):
-            return definition.code
+def _classify_file(file_name: str, *, specification_sources: dict[str, SalesOpSourceSpecification]) -> str | None:
+    for source_code, source_specification in specification_sources.items():
+        if source_specification.matches_file_name(file_name):
+            return source_code
     return None

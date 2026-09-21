@@ -2,7 +2,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import text
 
-from sales_op.registry import SOURCE_DEFINITIONS
+from sales_op.specification import source_table_name
 from schema_definition import quote_identifier
 
 if TYPE_CHECKING:
@@ -27,7 +27,7 @@ async def create_sales_op_view(
     engine: AsyncEngine,
     specification: SalesOpSpecification,
 ) -> str:
-    available_sources = await _available_sources(settings, engine=engine)
+    available_sources = await _available_sources(settings, engine=engine, specification=specification)
     if not available_sources:
         message = "нет таблиц sales_op для формирования представления"
         raise ValueError(message)
@@ -46,10 +46,15 @@ async def create_sales_op_view(
     return f"{settings.sales_op_schema}.{VIEW_NAME}"
 
 
-async def _available_sources(settings: Settings, *, engine: AsyncEngine) -> tuple[str, ...]:
+async def _available_sources(
+    settings: Settings,
+    *,
+    engine: AsyncEngine,
+    specification: SalesOpSpecification,
+) -> tuple[str, ...]:
     available: list[str] = []
     async with engine.connect() as connection:
-        for definition in SOURCE_DEFINITIONS:
+        for source_code in specification.sources:
             exists = bool(
                 await connection.scalar(
                     text(
@@ -60,18 +65,17 @@ async def _available_sources(settings: Settings, *, engine: AsyncEngine) -> tupl
                         )
                         """,
                     ),
-                    {"schema_name": settings.sales_op_schema, "table_name": definition.table_name},
+                    {"schema_name": settings.sales_op_schema, "table_name": source_table_name(source_code)},
                 ),
             )
             if exists:
-                available.append(definition.code)
+                available.append(source_code)
     return tuple(available)
 
 
 def _source_select(settings: Settings, specification: SalesOpSpecification, *, source_code: str) -> str:
     source_specification = specification.sources[source_code]
-    definition = next(item for item in SOURCE_DEFINITIONS if item.code == source_code)
-    table_reference = f"{quote_identifier(settings.sales_op_schema)}.{quote_identifier(definition.table_name)}"
+    table_reference = f"{quote_identifier(settings.sales_op_schema)}.{quote_identifier(source_table_name(source_code))}"
     projection_items = [*(_mapping_expression(mapping) for mapping in source_specification.mappings)]
     projection = ",\n    ".join(projection_items)
     return f"SELECT\n    {projection}\nFROM {table_reference}"

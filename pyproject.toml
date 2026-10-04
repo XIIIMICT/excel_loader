@@ -10,7 +10,7 @@ dependencies = [
     "pandas>=3.0.3",
     "pydantic>=2.13.4",
     "pyxlsb>=1.0.10",
-    "sqlalchemy>=2.0.51",
+    "sqlalchemy>=2.1.1",
 ]
 
 [dependency-groups]

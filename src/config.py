@@ -16,32 +16,6 @@ CONFIG_PATH = PROJECT_DIR / "config.toml"
 MAX_QUALIFIED_NAME_PARTS = 2
 
 
-class SmtpConfig(BaseModel):
-    """
-    Deprecated e-mail settings for the removed aiosmtplib path.
-
-    The loader sends no e-mail any more — alerts are delivered by the
-    Alertmanager in the monitoring stack. The fields stay here only so
-    legacy `config.toml` files keep loading until they are cleaned up.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    host: str | None = None
-    port: int | None = Field(default=None, ge=1, le=65535)
-    user: str | None = None
-    password: str | None = None
-    from_address: str | None = None
-
-    @model_validator(mode="after")
-    def normalize_optional_text(self) -> Self:
-        self.host = _strip_optional(self.host)
-        self.user = _strip_optional(self.user)
-        self.password = _strip_optional(self.password)
-        self.from_address = _strip_optional(self.from_address)
-        return self
-
-
 type PatternOrPath = str | Path
 type SourceMode = str
 type PostActionMode = Literal["success", "partial_success", "always"]
@@ -162,8 +136,6 @@ class CommonConfig(BaseModel):
     timezone: str | None = None
     postgres: PostgresConfig = Field(default_factory=PostgresConfig)
     imap: ImapConfig = Field(default_factory=ImapConfig)
-    # Deprecated: the loader sends no e-mail (alerts go through Alertmanager).
-    smtp: SmtpConfig = Field(default_factory=SmtpConfig)
     post_actions: tuple[PostActionConfig, ...] = ()
 
     @field_validator("log_dir", "unloaded_data_dir", "mock_data_dir", mode="after")
@@ -190,9 +162,6 @@ class ModuleBaseConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_name: str = Field(alias="schema", min_length=1)
-    # Deprecated: kept so legacy configs keep loading, no longer used.
-    smtp_error_handling_on: bool = False
-    smtp_recipients: tuple[str, ...] = ()
     mviews_to_refresh: tuple[str, ...] = ()
     users_to_grant: tuple[str, ...] = ()
 

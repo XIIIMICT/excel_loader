@@ -37,9 +37,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
-          python-version: "3.14"
+          python-version: "3.15"
           enable-cache: true
           cache-dependency-glob: uv.lock
       - run: uv sync --locked
@@ -55,9 +55,9 @@ jobs:
       COVERAGE_FILE: coverage-data
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
-          python-version: "3.14"
+          python-version: "3.15"
           enable-cache: true
           cache-dependency-glob: uv.lock
       - run: uv sync --locked

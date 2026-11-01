@@ -31,8 +31,8 @@ Exit code `0` only when no module has errors/format changes and no post-action f
 
 `config.py`. TOML, `extra="forbid"`: an unknown key is a validation error. Relative paths (`log_dir`, `unloaded_data_dir`, `mock_data_dir`, `data_dir`, post-action `path`) resolve against the project root. The file is read as `utf-8-sig` (BOM tolerated).
 
-- `[common]`: `log_dir`, `unloaded_data_dir`, `mock_data_dir`, `timezone` (empty/`null` → system), `[common.postgres]` (`host`/`port`/`user`/`password`/`db`/`schema`), `[common.imap]` (`host`/`port`/`user`/`password`/`mailbox`/`scan_depth`), `[common.smtp]` (deprecated, ignored — legacy files keep loading until cleaned), `[[common.post_actions]]` (`path`, `run_on`).
-- Module blocks `[quotes_nsi]`, `[quotes]`, `[pd]`, `[sales_op]`: `schema`, `smtp_error_handling_on`/`smtp_recipients` (deprecated, ignored), `mviews_to_refresh`, `users_to_grant`, `[<module>.sources]`.
+- `[common]`: `log_dir`, `unloaded_data_dir`, `mock_data_dir`, `timezone` (empty/`null` → system), `[common.postgres]` (`host`/`port`/`user`/`password`/`db`/`schema`), `[common.imap]` (`host`/`port`/`user`/`password`/`mailbox`/`scan_depth`), `[[common.post_actions]]` (`path`, `run_on`).
+- Module blocks `[quotes_nsi]`, `[quotes]`, `[pd]`, `[sales_op]`: `schema`, `mviews_to_refresh`, `users_to_grant`, `[<module>.sources]`.
 - `sources`: `data_dir` (required), `source = "local" | "imap"`, `file_pattern`, `imap_subject_pattern`. Regexes compile with `IGNORECASE`; their syntax is validated first.
 - `mviews_to_refresh` — names `name` or `schema.name`; without a schema the module's `schema` is prepended. Duplicates and more than two parts are errors.
 - External-service validation: if any module reads from IMAP, `common.imap.host/user/password` and that module's `imap_subject_pattern` are required.
@@ -129,7 +129,7 @@ Errors and warnings must point at the real cell in the source workbook, not at a
 ## Logs, metrics and alerts
 
 - `app_logging.py` writes JSON Lines to `logs/<timestamp>.log` (one file per run); the module code is attached to the log (`set_log_module`). At startup the folder is pruned: `.log` files older than `LOG_RETENTION_DAYS = 14` are removed (the folder grows unboundedly otherwise).
-- The loader sends no e-mail of its own: run reports and error notifications are delivered by the Alertmanager of the monitoring stack (see below). Its own SMTP path (aiosmtplib) was removed; `config.toml` still accepts the legacy `common.smtp` block and per-module `smtp_*` flags until those files are cleaned up, but they are ignored.
+- The loader sends no e-mail of its own: run reports and error notifications are delivered by the Alertmanager of the monitoring stack (see below). Its own SMTP path (aiosmtplib) was removed together with the `common.smtp` config keys.
 - `compose.yaml` forwards logs to `LOKI_URL` via Alloy; `infra/` holds the Alloy/Loki/Grafana/Prometheus/Alertmanager configs. The external service must be reachable at `LOKI_URL` (for example via a published host port).
 - Loki keeps logs 7 days: `infra/loki/config.yaml` sets `retention_period: 168h` **and** enables the `compactor` — without the compactor the retention setting is inert and chunks are never deleted.
 - `infra/alloy/config.alloy` promotes `level`/`module` into labels and keeps `run_id` plus `exception` as Loki structured metadata (queryable, but not labels — a label per run would explode the index). Trace a run end to end: `{job="excel_loader"} | run_id="<run_id>"`.

@@ -14,12 +14,9 @@ roadmap. `just check` and `just test` are green at the time of writing.
    logged (`ERROR`) to the run log file — and no e-mail goes out, exactly
    because Alertmanager sits in that stack.
    The old aiosmtplib path (`src/email_sender.py`, `_send_error_emails`) was
-   removed together with the aiosmtplib dependency. The legacy
-   `[common.smtp]` block and per-module `smtp_error_handling_on` /
-   `smtp_recipients` keys still load (deprecated, ignored) so existing
-   `config.toml` files keep working; remove the fields from `config.py`,
-   `config.example.toml` and users' `config.toml` in one cleanup commit
-   (see A12).
+   removed together with the aiosmtplib dependency and the `common.smtp`
+   config keys (from `config.py`, `config.example.toml` and the local
+   `config.toml`).
 2. **Metrics are pushed, not scraped.** The loader is a batch CLI run by
    cron: it starts, runs and exits. On every run it pushes the run state to
    the Pushgateway (`METRICS_PUSHGATEWAY_URL`, empty by default) and lets
@@ -65,8 +62,7 @@ couples `try/except BusinessLoadError → log + failed` with a bespoke summary
 type (`DictionaryRunSummary`, `PdRunSummary`, `SalesOpRunSummary`) and
 `main.py` re-wraps them into `ModuleRun` with three `if module ==` chains.
 *Do:* a common `ModuleOutcome` dataclass returned by each runner, plus one
-`_run_module(settings, spec)` dispatch over a module registry. After this
-the deprecated smtp fields in `ModuleRun` disappear entirely.
+`_run_module(settings, spec)` dispatch over a module registry.
 *Accept:* adding module #5 means a new registry entry + runner, no `main.py`
 edits beyond the registry.
 
@@ -131,10 +127,6 @@ at a blank row, deferred packages — these are documented landmines.
 - **A11. README.md** is outdated (landmine 2). Rewrite its top after at
   least half of the roadmap above is burned, or retire it in favor of
   `docs/`.
-- **A12. Deprecated smtp config cleanup.** Once users' `config.toml` files
-  drop the `[common.smtp]` block and per-module `smtp_*` flags: delete
-  `SmtpConfig`, the per-module fields and their mentions from `config.py` /
-  `config.example.toml` (the code no longer reads them).
 
 ## Operationally still unverified
 

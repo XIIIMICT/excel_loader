@@ -5,7 +5,9 @@ The exit-code/outcome matrix of ``main._run_app`` — the CLI contract for one p
 * module errors, format changes, module post-action failures and common
   post-action failures exit with ``1``; warnings alone do not;
 * the pushed outcome string follows ``_module_run_outcome``:
-  success / partial_success / failure.
+  success / partial_success / failure;
+* CLI module selection (audit E2): repeated ``--module`` choices unioned with
+  the legacy per-module boolean flags, no selection → all modules.
 
 The database seams (``_run_post_actions``, ``_run_common_post_actions``, the
 run metrics push) are stubbed, and the module registry is replaced with two
@@ -14,14 +16,20 @@ stub entries so no PostgreSQL/IMAP access is needed.
 
 import argparse
 import asyncio
-from typing import TYPE_CHECKING
+
+import pytest
 
 from config import Settings
-from main import ModuleEntry, ModuleRun, ModuleRunner, _run_app
+from main import (
+    MODULE_CODES,
+    ModuleEntry,
+    ModuleRun,
+    ModuleRunner,
+    _build_parser,
+    _run_app,
+    _selected_modules,
+)
 from module_models import ModuleOutcome
-
-if TYPE_CHECKING:
-    import pytest
 
 CODES = ("quotes_nsi", "quotes")
 
@@ -153,3 +161,45 @@ def test_run_app_common_post_action_failure_yields_exit_1(monkeypatch: pytest.Mo
     )
 
     assert exit_code == 1
+
+
+# --
+# CLI module selection (audit E2): repeated --module choices unioned with the
+# legacy per-module boolean flags; no explicit selection means all modules.
+
+
+def _parsed(argv: list[str]) -> argparse.Namespace:
+    """Build a real ``argparse.Namespace`` through ``_build_parser``."""
+    return _build_parser().parse_args(argv)
+
+
+def test_module_flag_selects_the_named_modules() -> None:
+    args = _parsed(["--module", "pd", "--module", "quotes"])
+
+    assert _selected_modules(args) == ("pd", "quotes")
+
+
+def test_module_flag_union_with_legacy_flags() -> None:
+    args = _parsed(["--module", "pd", "--quotes"])
+
+    assert _selected_modules(args) == ("pd", "quotes")
+
+
+def test_legacy_flags_still_select_modules() -> None:
+    args = _parsed(["--quotes-nsi", "--source", "local"])
+
+    assert _selected_modules(args) == ("quotes_nsi",)
+    assert args.source == "local"
+
+
+def test_no_selection_defaults_to_all_modules() -> None:
+    args = _parsed(["--source", "imap"])
+
+    assert _selected_modules(args) == MODULE_CODES
+
+
+def test_unknown_module_name_is_rejected_by_argparse() -> None:
+    with pytest.raises(SystemExit) as raised:
+        _parsed(["--module", "nope"])
+
+    assert raised.value.code == 2

@@ -20,7 +20,7 @@ loader (src/main.py)
 
 1. `load_settings()` reads `config.toml`, applies CLI overrides (`--source`).
 2. `configure_logging()` creates `logs/<timestamp>.log` (JSON Lines).
-3. Modules run in a fixed order: `quotes_nsi`, `quotes`, `pd`, `sales_op` (`_selected_modules`). With no flags — all four.
+3. Modules run in a fixed order: `quotes_nsi`, `quotes`, `pd`, `sales_op` (`_selected_modules`). Selection: repeated `--module <code>` unioned with the legacy `--quotes-nsi`/`--quotes`/`--pd`/`--sales-op` flags; with no selection — all four.
 4. Module post-actions: `USAGE` on the schema, `SELECT` on tables/relations, `REFRESH MATERIALIZED VIEW`. A module with errors (`has_errors`) skips its post-actions.
 5. Common post-actions (`[[common.post_actions]]`) run against the run outcome from `_module_run_outcome`: `success`, `partial_success` or `failure`; each action is selected by its own `run_on` (`always` also counts).
 6. Run metrics are pushed to the Pushgateway when `METRICS_PUSHGATEWAY_URL` is set (see "Logs, metrics and alerts"). The loader itself sends no e-mail: error reports are delivered by the Alertmanager of the monitoring stack, which reacts to the pushed metrics — if the stack is unreachable, the failed push is logged (`ERROR`) to the run log file and no e-mail goes out.

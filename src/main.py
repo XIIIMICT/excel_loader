@@ -30,9 +30,13 @@ if TYPE_CHECKING:
     from sqlalchemy import Table
     from sqlalchemy.ext.asyncio import AsyncEngine
 
+    from config import ModuleConfig
+
 LOGGER = get_logger("main")
 
 type ModuleRunner = Callable[[Settings], Awaitable[ModuleOutcome]]
+
+MODULE_CODES = ("quotes_nsi", "quotes", "pd", "sales_op")
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,8 +44,9 @@ class ModuleEntry:
     """
     Static per-module post-action config plus the runner that produces its outcome.
 
-    Adding a module is one ``ModuleEntry`` in ``_module_entries`` plus a runner
-    function returning ``ModuleOutcome``; ``_run_modules`` itself is unchanged.
+    Adding a module is one ``ModuleEntry`` in ``_module_entries``, one line in
+    ``MODULE_CODES`` plus a runner function returning ``ModuleOutcome``;
+    ``_run_modules`` itself is unchanged.
     """
 
     code: str
@@ -380,48 +385,42 @@ async def _refresh_materialized_views_if_needed(module_run: ModuleRun, *, engine
 
 
 def _selected_modules(args: argparse.Namespace) -> tuple[str, ...]:
+    """
+    Modules to run.
+
+    Repeated ``--module`` choices unioned with the legacy per-module boolean
+    flags; no explicit selection means all modules.
+    """
     selected_modules: list[str] = []
-    if args.quotes_nsi:
-        selected_modules.append("quotes_nsi")
-    if args.quotes:
-        selected_modules.append("quotes")
-    if args.pd:
-        selected_modules.append("pd")
-    if args.sales_op:
-        selected_modules.append("sales_op")
-    if selected_modules:
-        return tuple(selected_modules)
-    return "quotes_nsi", "quotes", "pd", "sales_op"
+    for code in getattr(args, "modules", None) or ():
+        if code not in selected_modules:
+            selected_modules.append(code)
+    for code in MODULE_CODES:
+        if getattr(args, code, False) and code not in selected_modules:
+            selected_modules.append(code)
+    return tuple(selected_modules) or MODULE_CODES
 
 
 def _apply_cli_overrides(settings: Settings, *, args: argparse.Namespace) -> Settings:
-    modules = _selected_modules(args)
-    quotes_nsi = settings.quotes_nsi
-    quotes = settings.quotes
-    pd = settings.pd
-    sales_op = settings.sales_op
-
+    updates: dict[str, ModuleConfig] = {}
     if args.source is not None:
-        if "quotes_nsi" in modules:
-            quotes_nsi = quotes_nsi.model_copy(
-                update={"sources": quotes_nsi.sources.model_copy(update={"source": args.source})},
+        for code in _selected_modules(args):
+            module = getattr(settings, code)
+            updates[code] = module.model_copy(
+                update={"sources": module.sources.model_copy(update={"source": args.source})},
             )
-        if "quotes" in modules:
-            quotes = quotes.model_copy(update={"sources": quotes.sources.model_copy(update={"source": args.source})})
-        if "pd" in modules:
-            pd = pd.model_copy(update={"sources": pd.sources.model_copy(update={"source": args.source})})
-        if "sales_op" in modules:
-            sales_op = sales_op.model_copy(
-                update={"sources": sales_op.sources.model_copy(update={"source": args.source})},
-            )
-
-    return settings.model_copy(
-        update={"quotes_nsi": quotes_nsi, "quotes": quotes, "pd": pd, "sales_op": sales_op},
-    )
+    return settings.model_copy(update=updates) if updates else settings
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Загрузка НСИ котировок, котировок, ПД и плана продаж.")
+    parser.add_argument(
+        "--module",
+        dest="modules",
+        action="append",
+        choices=MODULE_CODES,
+        help="Загрузить выбранный модуль (можно повторять; объединяется с флагами ниже).",
+    )
     parser.add_argument("--quotes-nsi", dest="quotes_nsi", action="store_true", help="Загрузить только НСИ котировок.")
     parser.add_argument("--quotes", action="store_true", help="Загрузить только котировки.")
     parser.add_argument("--pd", action="store_true", help="Загрузить только производственную сводку.")

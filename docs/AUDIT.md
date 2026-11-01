@@ -151,20 +151,27 @@ distinguishes them by iterating three separate tuples and calling three
 separate `_process_*` functions. There is no protocol that says "a loader
 resolves sources and builds a payload", so the only way to add a fourth loader
 kind is to copy a `_process_*` function and teach `run_dictionaries` about a
-new tuple. The A1 refactor below introduces that protocol
-(`_LoaderStrategy`) and the three existing kinds become thin adapters over it;
-a new kind is one adapter + registration, with no orchestrator edit.
+new tuple.
+**Status: closed by A1** (see "Implementation log"): the A1 refactor
+introduced that protocol (`_LoaderStrategy`) and the three existing kinds
+became thin adapters over it; a new kind is one adapter + registration, with
+no orchestrator edit.
 
 ### E2. The CLI is hardcoded to four modules
 
 `main._build_parser`, `_selected_modules` and `_apply_cli_overrides` each list
 `quotes_nsi` / `quotes` / `pd` / `sales_op` by name. The A2 refactor collapses
 the *dispatch* (`_run_modules`) into a registry, but the CLI surface still
-needs a per-module flag added by hand. The natural next step (deferred) is a
-single `--module <code>` repeatable flag whose choices come from the same
-registry, so adding module #5 touches one place (the registry) instead of
-three argparse branches. `config.Settings` and `_validate_imap_settings`
-(`src/config.py`) have the same four-module hardcoding — see A8.
+needs a per-module flag added by hand.
+**Done (November 2026):** `MODULE_CODES = ("quotes_nsi", "quotes", "pd",
+"sales_op")` is now the single declared code list; `--module <code>`
+(repeatable, argparse `choices=MODULE_CODES`) unions with the legacy
+`--quotes-nsi`/`--quotes`/`--pd`/`--sales-op` flags, and no explicit selection
+means all modules. `--source` overrides are applied in one generic loop over
+the selected codes. The legacy flags stay for existing scripts; the contract
+tests live in `tests/test_main_contracts.py`. `config.Settings` and
+`_validate_imap_settings` (`src/config.py`) still enumerate the four modules —
+see A8/E3.
 
 ### E3. `config.Settings` is a closed four-field shape
 
@@ -210,8 +217,10 @@ of the dictionary path: every loader kind, every column option and every
 per-row rule flows through it. Splitting it into `_validate_column_contract`,
 `_convert_row` and the payload assembler — with a frozen per-row-order test —
 is the highest-value P2 item and should land before any further column-option
-is added. Left in place for this pass; only the *runner* surface around it was
-consolidated.
+is added.
+**Status: closed by A6** — the split landed, the per-row order
+(`where` → raw skip → convert → converted skip → PK duplicate) is frozen by
+`tests/test_audit_followup.py` and guarded by landmine 21 in `AGENTS.md`.
 
 ## openpyxl → python-calamine assessment
 

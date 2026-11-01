@@ -26,7 +26,7 @@ An Excel-to-PostgreSQL loader. A single CLI process (`src/main.py`) runs the sel
 | Logs (Alloy / Loki+Grafana) | `just logging` · `just logging-standalone` |
 | Full observability (Loki + Prometheus + Alertmanager) | `just monitoring` |
 
-Default modules — all four. `--quotes-nsi`, `--quotes`, `--pd`, `--sales-op` narrow the set; `--source local|imap` overrides the source for the selected modules.
+Default modules — all four. `--module <code>` (repeatable; codes: `quotes_nsi`, `quotes`, `pd`, `sales_op`) and the legacy `--quotes-nsi`, `--quotes`, `--pd`, `--sales-op` flags select modules (a union); `--source local|imap` overrides the source for the selected modules.
 
 ## Landmines (critical!)
 

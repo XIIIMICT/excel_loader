@@ -15,9 +15,58 @@ from schema_definition import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
     from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
+
+POSTGRES_ROLE_EXISTS_SQL = "SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = :role_name)"
+
+
+async def grant_usage_on_schema(
+    connection: AsyncConnection,
+    schema_name: str,
+    role_names: Sequence[str],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """
+    GRANT USAGE ON SCHEMA to the requested roles that exist in ``pg_roles``.
+
+    Single grants helper (audit A5): storage-level preparation and the
+    ``postgres.py`` post-action wrappers both go through it, so a change to
+    the grant semantics lands in one place. Roles that do not exist are
+    skipped (returned as ``skipped``) instead of failing the query.
+    """
+    granted_roles: list[str] = []
+    skipped_roles: list[str] = []
+    for role_name in role_names:
+        role_exists = bool(await connection.scalar(text(POSTGRES_ROLE_EXISTS_SQL), {"role_name": role_name}))
+        if role_exists:
+            await connection.execute(
+                text(f"GRANT USAGE ON SCHEMA {quote_identifier(schema_name)} TO {quote_identifier(role_name)}"),
+            )
+            granted_roles.append(role_name)
+        else:
+            skipped_roles.append(role_name)
+    return tuple(granted_roles), tuple(skipped_roles)
+
+
+async def grant_select_on_table(
+    connection: AsyncConnection,
+    table: Table,
+    role_names: Sequence[str],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """GRANT SELECT ON TABLE to the requested roles that exist; see ``grant_usage_on_schema``."""
+    granted_roles: list[str] = []
+    skipped_roles: list[str] = []
+    for role_name in role_names:
+        role_exists = bool(await connection.scalar(text(POSTGRES_ROLE_EXISTS_SQL), {"role_name": role_name}))
+        if role_exists:
+            await connection.execute(
+                text(f"GRANT SELECT ON TABLE {qualified_table_name(table)} TO {quote_identifier(role_name)}"),
+            )
+            granted_roles.append(role_name)
+        else:
+            skipped_roles.append(role_name)
+    return tuple(granted_roles), tuple(skipped_roles)
 
 
 async def prepare_storage(
@@ -29,9 +78,9 @@ async def prepare_storage(
     try:
         async with engine.begin() as connection:
             await _ensure_schema_exists(connection, table)
-            await _grant_usage_on_schema(connection, table.schema or "public", users_to_grant)
+            await grant_usage_on_schema(connection, table.schema or "public", users_to_grant)
             await _ensure_table_exists(connection, table)
-            await _grant_select_on_table(connection, table, users_to_grant)
+            await grant_select_on_table(connection, table, users_to_grant)
     except DBAPIError as error:
         raise DatabaseOperationError.from_dbapi_error(
             error,
@@ -71,61 +120,9 @@ async def _ensure_schema_exists(connection: AsyncConnection, table: Table) -> No
     await connection.execute(CreateSchema(schema_name, if_not_exists=True))
 
 
-async def _grant_usage_on_schema(
-    connection: AsyncConnection,
-    schema_name: str,
-    role_names: tuple[str, ...],
-) -> None:
-    for role_name in role_names:
-        role_exists = bool(
-            await connection.scalar(
-                text("SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = :role_name)"),
-                {"role_name": role_name},
-            ),
-        )
-        if role_exists:
-            await connection.execute(
-                text(f"GRANT USAGE ON SCHEMA {quote_identifier(schema_name)} TO {quote_identifier(role_name)}"),
-            )
-
-
-async def _grant_select_on_table(
-    connection: AsyncConnection,
-    table: Table,
-    role_names: tuple[str, ...],
-) -> None:
-    for role_name in role_names:
-        role_exists = bool(
-            await connection.scalar(
-                text("SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = :role_name)"),
-                {"role_name": role_name},
-            ),
-        )
-        if role_exists:
-            await connection.execute(
-                text(f"GRANT SELECT ON TABLE {qualified_table_name(table)} TO {quote_identifier(role_name)}"),
-            )
-
-
 async def _ensure_table_exists(connection: AsyncConnection, table: Table) -> None:
-    table_exists = bool(
-        await connection.scalar(
-            text(
-                """
-                SELECT EXISTS(
-                    SELECT 1
-                    FROM information_schema.tables
-                    WHERE table_schema = :schema_name
-                      AND table_name = :table_name
-                )
-                """,
-            ),
-            {"schema_name": table.schema, "table_name": table.name},
-        ),
-    )
+    # ``create_all`` is idempotent: it emits DDL only for the missing table.
     await connection.run_sync(lambda sync_connection: table.metadata.create_all(sync_connection, tables=[table]))
-    if table_exists:
-        return
 
 
 async def _ensure_primary_key(connection: AsyncConnection, table: Table) -> None:

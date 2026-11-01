@@ -3,15 +3,14 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING
-from warnings import catch_warnings, filterwarnings, simplefilter
+from warnings import catch_warnings, simplefilter
 
-from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.utils.datetime import from_excel
 
 from app_logging import get_logger
 from business_errors import CellTypeConversionError
-from excel_parser import EXCEL_ERROR_VALUES, convert_excel_value, read_workbook_metadata
+from excel_parser import EXCEL_ERROR_VALUES, convert_excel_value, load_openpyxl_workbook, read_workbook_metadata
 from sales_op.models import (
     ParsedSalesOpFile,
     SalesOpColumnMapping,
@@ -19,13 +18,6 @@ from sales_op.models import (
     sales_op_error,
 )
 from sales_op.specification import normalize_excel_header
-
-filterwarnings(
-    "ignore",
-    message="Unknown extension is not supported and will be removed",
-    category=UserWarning,
-    module=r"openpyxl\.worksheet\._reader",
-)
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -128,7 +120,7 @@ def parse_sales_op_workbook(
 
 def _load_workbook(source_path: Path) -> Workbook:
     try:
-        return load_workbook(source_path, read_only=True, data_only=True, keep_links=False)
+        return load_openpyxl_workbook(source_path, data_only=True, read_only=True, keep_links=False)
     except Exception as error:
         message = f"не удалось открыть Excel-файл: {error}"
         raise sales_op_error(message) from error

@@ -1,6 +1,5 @@
 import math
 import re
-import warnings
 from collections import Counter
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
@@ -8,9 +7,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import pandas as pd
-from openpyxl import load_workbook
 from openpyxl.utils import column_index_from_string, get_column_letter
 
+from excel_parser import load_openpyxl_workbook
 from pd.models import Asset, Indicator, ParsedReport, RawMaterial
 
 if TYPE_CHECKING:
@@ -31,7 +30,6 @@ FOURTH_NAME_PART_INDEX = 3
 FIRST_POSSIBLE_ASSET_ROW = 10
 MIN_SURROUNDING_QUOTES_LENGTH = 2
 DUPLICATED_NAME_PARTS_COUNT = 2
-OPENPYXL_UNSUPPORTED_EXTENSION_WARNING = ".* extension is not supported and will be removed"
 DATE_PARTS_COUNT = 3
 SHORT_YEAR_LENGTH = 2
 SHORT_YEAR_CENTURY_THRESHOLD = 68
@@ -63,8 +61,8 @@ def parse_report(source_path: str | Path, *, loaded_at: datetime) -> ParsedRepor
         msg = f"Файл не найден: {path}"
         raise FileNotFoundError(msg)
 
-    formula_workbook = _load_workbook(path, data_only=False)
-    data_workbook = _load_workbook(path, data_only=True)
+    formula_workbook = load_openpyxl_workbook(path, data_only=False)
+    data_workbook = load_openpyxl_workbook(path, data_only=True)
     try:
         formula_sheet = _select_first_sheet(formula_workbook)
         data_sheet = _select_first_sheet(data_workbook)
@@ -104,17 +102,6 @@ def export_reference_csv(report: ParsedReport, output_dir: str | Path) -> None:
     report.assets_frame.to_csv(output_path / "assets.csv", index=False, encoding="utf-8-sig")
     report.raw_materials_frame.to_csv(output_path / "raw_materials.csv", index=False, encoding="utf-8-sig")
     report.indicators_frame.to_csv(output_path / "indicators.csv", index=False, encoding="utf-8-sig")
-
-
-def _load_workbook(path: Path, *, data_only: bool) -> Workbook:
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message=OPENPYXL_UNSUPPORTED_EXTENSION_WARNING,
-            category=UserWarning,
-            module=r"openpyxl\.worksheet\._reader",
-        )
-        return load_workbook(path, data_only=data_only, read_only=False)
 
 
 def _select_first_sheet(workbook: Workbook) -> Worksheet:

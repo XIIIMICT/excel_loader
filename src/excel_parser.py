@@ -1,9 +1,10 @@
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, tzinfo
 from numbers import Number
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, cast
+from warnings import catch_warnings, filterwarnings
 from zipfile import BadZipFile, ZipFile
 
 import pandas as pd
@@ -18,13 +19,15 @@ from business_errors import (
     FileMetadataMissingError,
     RequiredCellValueError,
     SourceColumnMissingError,
-    SourceFileNotFoundError,
 )
 from dictionary_models import ColumnDefinition, ColumnKind, DbRow, DbValue, DictionaryPayload, WorkbookMetadata
+from source_resolver import SourceFileNotFoundError
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from pathlib import Path
+
+    from openpyxl.workbook.workbook import Workbook
 
 TEXT_COLUMN_KIND = "text"
 XLSB_SUFFIX = ".xlsb"
@@ -35,6 +38,12 @@ OOXML_NAMESPACES = {
 }
 EXCEL_ERROR_VALUES = {"#NULL!", "#DIV/0!", "#VALUE!", "#REF!", "#NAME?", "#NUM!", "#N/A", "#GETTING_DATA"}
 ORIGIN_ATTR = "xls_origin"
+OPENPYXL_EXTENSION_WARNING = ".* extension is not supported and will be removed"
+# pandas engine for every dictionary value frame: the native `calamine` engine
+# (python-calamine) reads `.xlsx` and `.xlsb` with value parity versus the
+# previous openpyxl/pyxlsb reads (verified over `mock_data/`, see docs/AUDIT.md),
+# while the pyxlsb engine is deprecated in pandas.
+EXCEL_ENGINE = "calamine"
 type CellValueConverter = Callable[[object], DbValue]
 LOGGER = get_logger("excel")
 
@@ -103,8 +112,35 @@ def build_cell_locations(
 
 
 def read_sheet_names(source_path: Path) -> tuple[str, ...]:
-    with pd.ExcelFile(source_path) as workbook:
+    with pd.ExcelFile(source_path, engine=EXCEL_ENGINE) as workbook:
         return tuple(workbook.sheet_names)
+
+
+def load_openpyxl_workbook(
+    source_path: Path,
+    *,
+    data_only: bool,
+    read_only: bool = False,
+    keep_links: bool = True,
+) -> Workbook:
+    """
+    Open an openpyxl workbook with the openpyxl extension warning suppressed.
+
+    openpyxl 3.1 reads every format but emits ``"Unknown extension … will be
+    removed"`` for parts it ignores (e.g. inside ``.xlsb`` mocks). The
+    warning is silenced with a scoped ``catch_warnings`` block (audit A7 and
+    follow-up E4) instead of a module-level ``filterwarnings``. Parsing
+    modes stay per-caller: PD loads fully materialized books, sales_op opens
+    read-only value copies.
+    """
+    with catch_warnings():
+        filterwarnings(
+            "ignore",
+            message=OPENPYXL_EXTENSION_WARNING,
+            category=UserWarning,
+            module=r"openpyxl\.worksheet\._reader",
+        )
+        return load_workbook(source_path, data_only=data_only, read_only=read_only, keep_links=keep_links)
 
 
 def read_workbook_metadata(source_path: Path, *, timezone: tzinfo) -> WorkbookMetadata:
@@ -124,11 +160,12 @@ def read_workbook_metadata(source_path: Path, *, timezone: tzinfo) -> WorkbookMe
 
 
 def _read_openpyxl_user_name(source_path: Path) -> str:
-    workbook = load_workbook(source_path, read_only=True, data_only=True)
+    workbook = load_openpyxl_workbook(source_path, data_only=True, read_only=True)
     try:
+        # openpyxl types these through NestedText descriptors; the values are plain strings at runtime.
         return _extract_user_name(
-            last_modified_by=workbook.properties.lastModifiedBy,
-            creator=workbook.properties.creator,
+            last_modified_by=cast("str | None", workbook.properties.lastModifiedBy),
+            creator=cast("str | None", workbook.properties.creator),
         )
     finally:
         workbook.close()
@@ -158,15 +195,14 @@ def read_single_sheet_frame(
     sheet_name: str | int = 0,
 ) -> tuple[pd.DataFrame, WorkbookMetadata]:
     metadata = read_workbook_metadata(source_path, timezone=timezone)
-    engine = _excel_engine(source_path)
     frame = pd.read_excel(
         source_path,
         sheet_name=sheet_name,
         keep_default_na=False,
         na_filter=False,
-        engine=engine,
+        engine=EXCEL_ENGINE,
     )
-    first_column_index = _first_used_column_index(source_path, sheet_name=sheet_name, engine=engine)
+    first_column_index = _first_used_column_index(source_path, sheet_name=sheet_name)
     column_letters = {
         str(column): _excel_column_name(first_column_index + column_index + 1)
         for column_index, column in enumerate(frame.columns)
@@ -182,12 +218,7 @@ def read_single_sheet_frame(
     )
 
 
-def _first_used_column_index(
-    source_path: Path,
-    *,
-    sheet_name: str | int,
-    engine: Literal["pyxlsb"] | None,
-) -> int:
+def _first_used_column_index(source_path: Path, *, sheet_name: str | int) -> int:
     raw_frame = pd.read_excel(
         source_path,
         sheet_name=sheet_name,
@@ -195,7 +226,7 @@ def _first_used_column_index(
         nrows=1,
         keep_default_na=False,
         na_filter=False,
-        engine=engine,
+        engine=EXCEL_ENGINE,
     )
     if raw_frame.empty:
         return 0
@@ -209,7 +240,7 @@ def _first_used_column_index(
 def _resolved_sheet_name(source_path: Path, *, sheet_name: str | int) -> str:
     if isinstance(sheet_name, str):
         return sheet_name
-    with pd.ExcelFile(source_path) as workbook:
+    with pd.ExcelFile(source_path, engine=EXCEL_ENGINE) as workbook:
         sheet_names = workbook.sheet_names
     if 0 <= sheet_name < len(sheet_names):
         return sheet_names[sheet_name]
@@ -239,7 +270,7 @@ def select_columns_excluding_checks(frame: pd.DataFrame) -> pd.DataFrame:
     return frame.loc[:, selected_headers].copy()
 
 
-def build_dictionary_payload(  # noqa: C901, PLR0912, PLR0913, PLR0915
+def build_dictionary_payload(  # noqa: PLR0913  # stable kwargs API for every loader kind; the body is split below
     *,
     table_reference: str,
     selected_frame: pd.DataFrame,
@@ -257,30 +288,51 @@ def build_dictionary_payload(  # noqa: C901, PLR0912, PLR0913, PLR0915
     dropped_columns: tuple[str, ...] = (),
     cell_locations: Sequence[Mapping[str, str]] | None = None,
 ) -> DictionaryPayload:
+    """
+    Validate the column contract, convert rows and assemble the dictionary payload.
+
+    The per-row order is frozen (see ``test_build_dictionary_payload_row_order``):
+    ``where`` filter → raw skip → convert (excel-error warnings, custom
+    converters, required-null deferral, unique-column duplicates) → converted
+    skip → primary-key duplicate. Aliases are applied before every other
+    check, so ``*_columns`` arguments are expressed in target column names.
+    """
     if column_aliases:
         selected_frame = _apply_column_aliases(selected_frame, column_aliases=column_aliases)
         selected_frame = _rename_frame_origin(selected_frame, column_aliases=column_aliases)
         cell_locations = _rename_locations(cell_locations, column_aliases=column_aliases)
     selected_columns = tuple(str(column) for column in selected_frame.columns)
-    for primary_key_column in primary_key_columns:
-        if primary_key_column not in selected_columns:
-            raise SourceColumnMissingError(primary_key_column)
-    for filtered_column in not_null_filtered_columns:
-        if filtered_column not in selected_columns:
-            raise SourceColumnMissingError(filtered_column)
-    for configured_column in (*not_null_columns, *unique_columns, *(where_columns or {})):
-        if configured_column not in selected_columns:
-            raise SourceColumnMissingError(configured_column)
+    # Historically the contract is reported in this order: primary key and
+    # filtered columns first, then not-null / unique / where columns.
+    _validate_column_contract(
+        selected_columns=selected_columns,
+        required_columns=(
+            *primary_key_columns,
+            *not_null_filtered_columns,
+            *not_null_columns,
+            *unique_columns,
+            *(where_columns or {}),
+        ),
+    )
 
     target_columns = tuple(column_name for column_name in selected_columns if column_name not in dropped_columns)
     origin = frame_origin(selected_frame)
-    rows: list[DbRow] = []
-    warning_count = 0
-    unique_keys: set[tuple[object, ...]] = set()
-    unique_values: dict[str, dict[object, str]] = {column_name: {} for column_name in unique_columns}
-    first_required_error: RequiredCellValueError | None = None
     configured_column_kinds = column_kinds or {}
     configured_column_converters = column_converters or {}
+    converter = _RowConverter(
+        selected_columns=selected_columns,
+        primary_key_columns=primary_key_columns,
+        not_null_columns=not_null_columns,
+        dropped_columns=dropped_columns,
+        column_kinds=configured_column_kinds,
+        column_converters=configured_column_converters,
+        preserve_text_values=preserve_text_values,
+        source_name=source_name,
+        origin=origin,
+        unique_columns=unique_columns,
+    )
+
+    rows: list[DbRow] = []
     for row_number, row in enumerate(selected_frame.itertuples(index=False, name=None), start=2):
         row_position = row_number - 2
         row_locations = (
@@ -292,69 +344,18 @@ def build_dictionary_payload(  # noqa: C901, PLR0912, PLR0913, PLR0915
         if _should_skip_raw_filtered_row(raw_row, not_null_filtered_columns):
             continue
         row_reference = _row_reference(origin, row_locations=row_locations, row_number=row_number)
-        prepared_row: DbRow = {}
-        for column_index, (column_name, value) in enumerate(zip(selected_columns, row, strict=True), start=1):
-            if column_name in dropped_columns:
-                continue
-            cell_reference = _cell_reference(
-                origin,
-                row_locations=row_locations,
-                column_name=column_name,
-                row_position=row_position,
-                fallback=f"{_excel_column_name(column_index)}{row_number}",
-            )
-            nullable = column_name not in primary_key_columns and column_name not in not_null_columns
-            converter = configured_column_converters.get(column_name)
-            if converter is not None:
-                prepared_row[column_name] = converter(value)
-            else:
-                kind = configured_column_kinds.get(column_name, TEXT_COLUMN_KIND)
-                if _is_excel_error(value):
-                    warning_count += 1
-                prepared_row[column_name] = convert_excel_value(
-                    value,
-                    kind=kind,
-                    cell_reference=cell_reference,
-                    excel_errors_as_null=True,
-                    source_name=source_name,
-                    preserve_text=preserve_text_values,
-                    nullable=nullable,
-                )
-            prepared_value = prepared_row[column_name]
-            if not nullable and prepared_value is None and first_required_error is None:
-                first_required_error = RequiredCellValueError(
-                    cell_reference,
-                    column_name,
-                    value,
-                    source_name=source_name,
-                )
-            if column_name in unique_values and prepared_value is not None:
-                first_cell_reference = unique_values[column_name].get(prepared_value)
-                if first_cell_reference is not None:
-                    raise DuplicateCellValueError(
-                        column_name,
-                        prepared_value,
-                        cell_reference,
-                        first_cell_reference,
-                        source_name=source_name,
-                    )
-                unique_values[column_name][prepared_value] = cell_reference
+        prepared_row = converter.convert(
+            row,
+            row_number=row_number,
+            row_position=row_position,
+            row_locations=row_locations,
+        )
         if _should_skip_filtered_row(prepared_row, not_null_filtered_columns):
             continue
-
-        if primary_key_columns:
-            primary_key_value = tuple(prepared_row[column_name] for column_name in primary_key_columns)
-            if primary_key_value in unique_keys:
-                raise DuplicatePrimaryKeyError(
-                    primary_key_columns,
-                    row_number,
-                    row_reference=row_reference,
-                )
-            unique_keys.add(primary_key_value)
+        converter.register_primary_key(prepared_row, row_number=row_number, row_reference=row_reference)
         rows.append(prepared_row)
 
-    if first_required_error is not None:
-        raise first_required_error
+    converter.raise_deferred_required_error()
 
     columns = _build_column_definitions(
         selected_columns=target_columns,
@@ -369,8 +370,136 @@ def build_dictionary_payload(  # noqa: C901, PLR0912, PLR0913, PLR0915
         columns=columns,
         rows=rows,
         metadata=metadata,
-        warning_count=warning_count,
+        warning_count=converter.warning_count,
     )
+
+
+def _validate_column_contract(
+    *,
+    selected_columns: tuple[str, ...],
+    required_columns: tuple[str, ...],
+) -> None:
+    """
+    Every configured column must exist among the (already aliased) source columns.
+
+    Aliases are applied before this check, so ``required_columns`` is
+    expressed in target column names; a missing source column is an error
+    (AGENTS.md landmine). The caller assembles the tuple in the historical
+    reporting order: primary key, filtered, not-null, unique, where columns.
+    """
+    for required_column in required_columns:
+        if required_column not in selected_columns:
+            raise SourceColumnMissingError(required_column)
+
+
+@dataclass(slots=True)
+class _RowConverter:
+    """
+    Per-row conversion state and logic for ``build_dictionary_payload``.
+
+    Owns the per-column pipeline — excel-error warning counting, custom
+    converters, required-null deferral, unique-column duplicate detection —
+    and the primary-key duplicate check. The caller keeps the surrounding
+    order (``where`` filter, raw skip, converted skip).
+    """
+
+    selected_columns: tuple[str, ...]
+    primary_key_columns: tuple[str, ...]
+    not_null_columns: tuple[str, ...]
+    dropped_columns: tuple[str, ...]
+    column_kinds: dict[str, ColumnKind]
+    column_converters: dict[str, CellValueConverter]
+    preserve_text_values: bool
+    source_name: str | None
+    origin: FrameOrigin | None
+    unique_columns: tuple[str, ...]
+
+    warning_count: int = 0
+    first_required_error: RequiredCellValueError | None = None
+    unique_keys: set[tuple[object, ...]] = field(default_factory=set)
+    unique_values: dict[str, dict[object, str]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.unique_values = {column_name: {} for column_name in self.unique_columns}
+
+    def convert(
+        self,
+        raw_values: tuple[object, ...],
+        *,
+        row_number: int,
+        row_position: int,
+        row_locations: Mapping[str, str] | None,
+    ) -> DbRow:
+        """Convert one already where-filtered raw row; may raise the row-column duplicate error."""
+        prepared_row: DbRow = {}
+        for column_index, (column_name, value) in enumerate(
+            zip(self.selected_columns, raw_values, strict=True),
+            start=1,
+        ):
+            if column_name in self.dropped_columns:
+                continue
+            cell_reference = _cell_reference(
+                self.origin,
+                row_locations=row_locations,
+                column_name=column_name,
+                row_position=row_position,
+                fallback=f"{_excel_column_name(column_index)}{row_number}",
+            )
+            nullable = column_name not in self.primary_key_columns and column_name not in self.not_null_columns
+            custom_converter = self.column_converters.get(column_name)
+            if custom_converter is not None:
+                prepared_row[column_name] = custom_converter(value)
+            else:
+                kind = self.column_kinds.get(column_name, TEXT_COLUMN_KIND)
+                if _is_excel_error(value):
+                    self.warning_count += 1
+                prepared_row[column_name] = convert_excel_value(
+                    value,
+                    kind=kind,
+                    cell_reference=cell_reference,
+                    excel_errors_as_null=True,
+                    source_name=self.source_name,
+                    preserve_text=self.preserve_text_values,
+                    nullable=nullable,
+                )
+            prepared_value = prepared_row[column_name]
+            if not nullable and prepared_value is None and self.first_required_error is None:
+                self.first_required_error = RequiredCellValueError(
+                    cell_reference,
+                    column_name,
+                    value,
+                    source_name=self.source_name,
+                )
+            if column_name in self.unique_values and prepared_value is not None:
+                first_cell_reference = self.unique_values[column_name].get(prepared_value)
+                if first_cell_reference is not None:
+                    raise DuplicateCellValueError(
+                        column_name,
+                        prepared_value,
+                        cell_reference,
+                        first_cell_reference,
+                        source_name=self.source_name,
+                    )
+                self.unique_values[column_name][prepared_value] = cell_reference
+        return prepared_row
+
+    def register_primary_key(self, prepared_row: DbRow, *, row_number: int, row_reference: str | None) -> None:
+        """Raise on a converted primary-key collision; called after the converted-skip."""
+        if not self.primary_key_columns:
+            return
+        primary_key_value = tuple(prepared_row[column_name] for column_name in self.primary_key_columns)
+        if primary_key_value in self.unique_keys:
+            raise DuplicatePrimaryKeyError(
+                self.primary_key_columns,
+                row_number,
+                row_reference=row_reference,
+            )
+        self.unique_keys.add(primary_key_value)
+
+    def raise_deferred_required_error(self) -> None:
+        """Raise the first required-cell error captured during conversion, if any."""
+        if self.first_required_error is not None:
+            raise self.first_required_error
 
 
 def _should_skip_filtered_row(row: DbRow, filtered_columns: tuple[str, ...]) -> bool:
@@ -666,13 +795,6 @@ def _row_reference(
 
 def _raise_non_integer_value() -> None:
     raise ValueError
-
-
-def _excel_engine(source_path: Path) -> Literal["pyxlsb"] | None:
-    if source_path.suffix.lower() == XLSB_SUFFIX:
-        return "pyxlsb"
-
-    return None
 
 
 def _is_check_column(column_name: str) -> bool:

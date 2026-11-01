@@ -1,11 +1,11 @@
 from collections import defaultdict
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from app_logging import get_logger
 from business_errors import BusinessLoadError
-from db import create_postgres_engine
+from db import postgres_session
 from dictionary_models import SourceHistoryEntry
+from module_models import ModuleOutcome
 from postgres import inspect_storage, replace_table_rows
 from sales_op.db import create_sales_op_view, drop_sales_op_view
 from sales_op.excel_parser import inspect_sales_op_workbook, parse_sales_op_workbook
@@ -34,29 +34,13 @@ LOGGER = get_logger("sales_op")
 DEFAULT_FILE_PATTERN = r".*\.xlsx$"
 
 
-@dataclass(frozen=True, slots=True)
-class SalesOpRunSummary:
-    failed_items: int
-    warning_items: int
-    loaded_tables: tuple[Table, ...]
-    view_reference: str | None
-
-    @property
-    def has_errors(self) -> bool:
-        return self.failed_items > 0
-
-    @property
-    def has_warnings(self) -> bool:
-        return self.warning_items > 0
-
-
-async def run_sales_op(settings: Settings) -> SalesOpRunSummary:
+async def run_sales_op(settings: Settings) -> ModuleOutcome:
     data_dir = settings.sales_op.sources.data_dir
     try:
         specification = read_sales_op_specification(data_dir / SPECIFICATION_FILE_NAME)
     except SalesOpError as error:
         LOGGER.log(40, "План продаж не загружен. Причина: %s.", error)
-        return SalesOpRunSummary(1, 0, (), None)
+        return _sales_op_outcome(has_errors=True, loaded_tables=(), view_reference=None, has_warnings=False)
 
     try:
         with resolve_all_pattern_sources(
@@ -77,10 +61,9 @@ async def run_sales_op(settings: Settings) -> SalesOpRunSummary:
             )
     except SourceError as error:
         LOGGER.log(40, "План продаж не загружен. Причина: %s.", error)
-        return SalesOpRunSummary(1, 0, (), None)
+        return _sales_op_outcome(has_errors=True, loaded_tables=(), view_reference=None, has_warnings=False)
 
-    engine = create_postgres_engine(settings)
-    try:
+    async with postgres_session(settings) as engine:
         await drop_sales_op_view(settings, engine=engine)
         loaded_tables, storage_failures = await _replace_tables(
             settings,
@@ -100,14 +83,28 @@ async def run_sales_op(settings: Settings) -> SalesOpRunSummary:
         except Exception:
             view_failures = 1
             LOGGER.exception("Не удалось создать представление sales_op_raw_view.")
-    finally:
-        await engine.dispose()
 
-    return SalesOpRunSummary(
-        failed_items=inspection_failures + parse_failures + storage_failures + view_failures,
-        warning_items=selection_warnings + parse_warnings,
+    return _sales_op_outcome(
+        has_errors=inspection_failures + parse_failures + storage_failures + view_failures > 0,
         loaded_tables=loaded_tables,
         view_reference=view_reference,
+        has_warnings=selection_warnings + parse_warnings > 0,
+    )
+
+
+def _sales_op_outcome(
+    *,
+    has_errors: bool,
+    loaded_tables: tuple[Table, ...],
+    view_reference: str | None,
+    has_warnings: bool,
+) -> ModuleOutcome:
+    return ModuleOutcome(
+        has_errors=has_errors,
+        has_warnings=has_warnings,
+        has_format_changes=False,
+        tables_to_grant=loaded_tables,
+        relation_references_to_grant=(view_reference,) if view_reference else (),
     )
 
 

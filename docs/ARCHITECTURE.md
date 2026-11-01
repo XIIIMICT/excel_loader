@@ -66,6 +66,8 @@ IMAP mode: `IMAP4_SSL`, `common.imap.*`, the last `scan_depth` messages are scan
 | `CombinedDictionaryLoader` | a fixed set of files → one table (parts accumulate) |
 | `PatternDictionaryLoader` | all folder files by pattern → one table |
 
+Value frames are read through the pandas-native calamine engine (`excel_parser.EXCEL_ENGINE`; `python-calamine` reads `.xlsx`/`.xlsb` with the same values as the previous openpyxl/pyxlsb engines, while the pyxlsb engine is deprecated in pandas). openpyxl stays for workbook metadata (`read_workbook_metadata`: properties for `.xlsx`, `docProps/core.xml` for `.xlsb`), for PD (fonts, `data_only=False`) and sales_op (`properties.modified`); the sales_op spec reads via the direct pyxlsb API — see docs/AUDIT.md, the calamine assessment.
+
 Each loader builds a `DictionaryPayload` via `build_dictionary_payload` (`excel_parser.py`): `table_reference`, `selected_frame`, `primary_key_columns`, `metadata` and optionally:
 
 - `not_null_columns` — columns that cannot be `NULL` (in addition to the PK);
@@ -110,7 +112,7 @@ Errors and warnings must point at the real cell in the source workbook, not at a
 `schema_definition.py`, `storage.py`, `postgres.py`.
 
 - Types by `ColumnKind`: `text` → `TEXT`, `bool` → `BOOLEAN`, `date` → `DATE`, `datetime` → `TIMESTAMP`, `timestamp_tz` → `TIMESTAMPTZ`, `float` → `DOUBLE PRECISION`, `int` → `INTEGER`.
-- `prepare_storage`: create the schema (`CREATE SCHEMA IF NOT EXISTS`), grant `USAGE` and `SELECT` to existing roles (`users_to_grant`), create the table if missing.
+- `prepare_storage`: create the schema (`CREATE SCHEMA IF NOT EXISTS`), grant `USAGE` and `SELECT` to existing roles (`users_to_grant`), create the table if missing. The grants run through the shared connection-level helpers `grant_usage_on_schema` / `grant_select_on_table` (role-filtered via `POSTGRES_ROLE_EXISTS_SQL` in `storage.py`); table creation is an unconditional idempotent `create_all`.
 - `replace_table_rows`: in one transaction `TRUNCATE` the target table → `align_table_structure` → insert rows → write source-history rows. Target tables are **replaced wholesale**, not appended to.
 - `align_table_structure`: add missing columns, change type (`USING cast`), fix nullability, create/verify the PK, create missing single-column `UNIQUE` constraints; drop "retired" columns (`user_name`, `date_upload`, `date_modified`, plus `source_report_name` for `quotes_nsi_sources`).
 - A mismatch between the existing PK and the expected one, or a PK where none is expected, is a `DatabaseOperationError`. A PK `IntegrityError` during insert is a `DuplicatePrimaryKeyError`.
@@ -122,7 +124,7 @@ Errors and warnings must point at the real cell in the source workbook, not at a
 
 ## Post-actions, grants and materialized views
 
-- `users_to_grant`: `USAGE` on the schema + `SELECT` on loaded tables and, for PD/sales_op, the analytic view. Missing roles are skipped with a log entry, not treated as an error.
+- `users_to_grant`: `USAGE` on the schema + `SELECT` on loaded tables and, for PD/sales_op, the analytic view. All grants go through the same `storage.py` helpers (engine-level wrappers in `postgres.py`); missing roles are skipped with a log entry, not treated as an error.
 - `mviews_to_refresh`: `REFRESH MATERIALIZED VIEW` when the view exists; otherwise skip with a log entry. A refresh failure is a failed module post-action.
 - `[[common.post_actions]]`: an arbitrary SQL file (`path`) executed after the module post-actions against the run outcome (`run_on`: `success`/`partial_success`/`always`). Example — `sql/post_actions/assign_object_owner.sql`.
 

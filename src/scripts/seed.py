@@ -18,7 +18,7 @@ from sqlalchemy.schema import CreateSchema
 
 from app_logging import configure_logging, get_logger
 from config import Settings, load_settings
-from db import create_postgres_engine
+from db import postgres_session
 from pd.db import load_report_to_db
 from pd.excel_parser import parse_report
 from pd.schema import PdTables, build_pd_tables
@@ -96,8 +96,7 @@ async def seed_pd(settings: Settings) -> None:
     report = _with_seed_indicator_db_names(parse_report(source_path, loaded_at=loaded_at))
     tables = build_pd_tables(settings)
 
-    engine = create_postgres_engine(settings)
-    try:
+    async with postgres_session(settings) as engine:
         async with engine.begin() as connection:
             if tables.metadata.schema is not None:
                 await connection.execute(CreateSchema(tables.metadata.schema, if_not_exists=True))
@@ -109,8 +108,6 @@ async def seed_pd(settings: Settings) -> None:
             await connection.execute(delete(tables.data))
 
         await _grant_select(settings, engine, tables)
-    finally:
-        await engine.dispose()
 
     LOGGER.info(
         "Seed PD завершен. Источник=%s, assets=%s, materials=%s, indicators=%s, data очищена.",

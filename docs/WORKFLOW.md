@@ -19,13 +19,13 @@ Python 3.14, package manager and runner — **uv**. The app runs in Docker Compo
 | Lint | `uv run ruff check` |
 | Format | `uv run ruff format` |
 | Types | `uv run ty check` |
-| Tests | `just test` (`uv run pytest -q`) |
+| Tests | `just test` (`uv run pytest -q --cov=src`) |
 | Everything at once | `just check` (format + check + ty, then tests) |
 
 - `ruff` with the `ALL` set and explicit exclusions (`pyproject.toml`): Cyrillic is allowed (`RUF001-003`), docstrings are optional (`D1xx`), TODO markers need no author (`TD002/003`, `FIX002`). `line-length = 120`, `target-version = py314`, formatting — LF, double quotes.
 - `ty check` — a static type checker (not mypy!). Type errors are a red flag.
-- `pytest`: `testpaths = ["tests"]`, `pythonpath = ["src"]`, `filterwarnings = ["error", ...]` — any unexpected warning is a failure (one openpyxl `Unknown extension…` warning is ignored for the `.xlsb` mock workbooks). Tests in `tests/` (`test_common.py`, `test_quotes_nsi.py`, `test_daily_excel.py`, `test_baiinfo.py`, `test_argus_pdf.py`, `test_argus_fc_exception.py`, `test_sci.py`, `test_sales_op.py`, `test_metrics.py`). Shared helpers/fixtures live in `tests/conftest.py` (`workbook_metadata`, `MOCK_DATA_DIR`). Parsing/mapping tests use mock data from `mock_data/` and need no database.
-- Coverage config lives in `pyproject.toml` (`[tool.coverage.run]`, `[tool.coverage.report]`), source `src`, `src/scripts/*` excluded. Run locally with `uv run pytest --cov=src --cov-branch --cov-report=term`. CI does not enforce a coverage threshold yet (the audit proposes starting at 50% and raising it — see `docs/AUDIT.md`, A10).
+- `pytest`: `testpaths = ["tests"]`, `pythonpath = ["src"]`, `filterwarnings = ["error", ...]` — any unexpected warning is a failure (one openpyxl `Unknown extension…` warning is ignored for the `.xlsb` mock workbooks). Tests in `tests/`: parsing/mapping per module (`test_common.py`, `test_quotes_nsi.py`, `test_daily_excel.py`, `test_baiinfo.py`, `test_argus_pdf.py`, `test_argus_fc_exception.py`, `test_sci.py`, `test_sales_op.py`), metrics (`test_metrics.py`), and the November 2026 follow-up contract tests (`test_audit_followup.py`, `test_config.py`, `test_db.py`, `test_app_logging.py`, `test_main_contracts.py`). Shared helpers/fixtures live in `tests/conftest.py` (`workbook_metadata`, `MOCK_DATA_DIR`). Parsing/mapping tests use mock data from `mock_data/` and need no database.
+- Coverage config lives in `pyproject.toml` (`[tool.coverage.run]`: source `src`, branch mode, `src/scripts/*` excluded; `[tool.coverage.report]`: `fail_under = 40`). `just test` runs pytest with `--cov=src`, so the 40% floor is enforced locally, in CI and in `just check`. The floor is a regression threshold, not a target (audit A10): the owner set it below the audit-proposed 50 so a future module does not fail the suite on arrival. Add tests where behavior warrants them — parsing/config/contracts naturally sit above it, DB-layer code is exercised against real PostgreSQL instead.
 - `sales_op` tests read the specification and workbooks from `mock_data/sales_op`.
 - Tests must not touch production services. If a test needs a database, use a dedicated database/schema and clear it explicitly.
 

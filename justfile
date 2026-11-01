@@ -46,9 +46,9 @@ typecheck:
     uv run ty check
 
 test:
-    uv run pytest -q
+    uv run pytest -q --cov=src
 
 check: format
     uv run ruff check
     uv run ty check
-    uv run pytest -q
+    just test

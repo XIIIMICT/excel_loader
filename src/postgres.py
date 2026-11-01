@@ -6,7 +6,12 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from business_errors import DatabaseOperationError, DuplicatePrimaryKeyError
 from schema_definition import primary_key_columns, qualified_table_name, quote_identifier, split_table_reference
-from storage import align_table_structure
+from storage import (
+    POSTGRES_ROLE_EXISTS_SQL,
+    align_table_structure,
+    grant_select_on_table,
+    grant_usage_on_schema,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -156,28 +161,9 @@ async def grant_select_on_table_to_existing_roles(
     table: Table,
     role_names: Sequence[str],
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    granted_roles: list[str] = []
-    skipped_roles: list[str] = []
     async with engine.begin() as connection:
-        for role_name in role_names:
-            role_exists = bool(
-                await connection.scalar(
-                    text("SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = :role_name)"),
-                    {"role_name": role_name},
-                ),
-            )
-            if not role_exists:
-                skipped_roles.append(role_name)
-                continue
-
-            await connection.execute(
-                text(
-                    f"GRANT SELECT ON TABLE {qualified_table_name(table)} TO {quote_identifier(role_name)}",
-                ),
-            )
-            granted_roles.append(role_name)
-
-    return tuple(granted_roles), tuple(skipped_roles)
+        granted_roles, skipped_roles = await grant_select_on_table(connection, table, role_names)
+    return granted_roles, skipped_roles
 
 
 async def grant_usage_on_schema_to_existing_roles(
@@ -186,28 +172,9 @@ async def grant_usage_on_schema_to_existing_roles(
     schema_name: str,
     role_names: Sequence[str],
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    granted_roles: list[str] = []
-    skipped_roles: list[str] = []
     async with engine.begin() as connection:
-        for role_name in role_names:
-            role_exists = bool(
-                await connection.scalar(
-                    text("SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = :role_name)"),
-                    {"role_name": role_name},
-                ),
-            )
-            if not role_exists:
-                skipped_roles.append(role_name)
-                continue
-
-            await connection.execute(
-                text(
-                    f"GRANT USAGE ON SCHEMA {quote_identifier(schema_name)} TO {quote_identifier(role_name)}",
-                ),
-            )
-            granted_roles.append(role_name)
-
-    return tuple(granted_roles), tuple(skipped_roles)
+        granted_roles, skipped_roles = await grant_usage_on_schema(connection, schema_name, role_names)
+    return granted_roles, skipped_roles
 
 
 async def grant_select_on_relation_to_existing_roles(
@@ -222,17 +189,11 @@ async def grant_select_on_relation_to_existing_roles(
     skipped_roles: list[str] = []
     async with engine.begin() as connection:
         for role_name in role_names:
-            role_exists = bool(
-                await connection.scalar(
-                    text("SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = :role_name)"),
-                    {"role_name": role_name},
-                ),
-            )
-            if not role_exists:
+            role_exists = bool(await connection.scalar(text(POSTGRES_ROLE_EXISTS_SQL), {"role_name": role_name}))
+            if role_exists:
+                await connection.execute(text(f"GRANT SELECT ON {quoted_relation} TO {quote_identifier(role_name)}"))
+                granted_roles.append(role_name)
+            else:
                 skipped_roles.append(role_name)
-                continue
-
-            await connection.execute(text(f"GRANT SELECT ON {quoted_relation} TO {quote_identifier(role_name)}"))
-            granted_roles.append(role_name)
 
     return tuple(granted_roles), tuple(skipped_roles)

@@ -1,19 +1,7 @@
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from pathlib import Path
-
-
 class BusinessLoadError(Exception):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
-
-
-class SourceFileNotFoundError(BusinessLoadError):
-    def __init__(self, source_path: Path) -> None:
-        super().__init__("файл не найден")
-        self.source_path = source_path
 
 
 class SourceColumnMissingError(BusinessLoadError):

@@ -2,34 +2,53 @@ import argparse
 import asyncio
 import sys
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING
 
 from app_logging import configure_logging, get_logger, reset_log_module, set_log_module
 from config import Settings, load_settings
-from db import create_postgres_engine
+from db import postgres_session
 from dictionaries.quotes_nsi_registry import DICTIONARIES as QUOTES_NSI_DICTIONARIES
 from dictionaries.quotes_registry import COMBINED_DICTIONARIES as QUOTES_COMBINED_DICTIONARIES
 from dictionaries.quotes_registry import DICTIONARIES as QUOTES_DICTIONARIES
 from dictionaries.quotes_registry import PATTERN_DICTIONARIES as QUOTES_PATTERN_DICTIONARIES
-from dictionary_runner import DictionaryRunSummary, run_dictionaries
+from dictionary_runner import run_dictionaries
 from metrics import build_run_metrics, push_run_metrics
-from pd.runner import PdRunSummary, run_pd
-from pd.schema import build_pd_tables, pd_view_reference
+from module_models import ModuleOutcome
+from pd.runner import run_pd
 from postgres import (
     grant_select_on_relation_to_existing_roles,
     grant_select_on_table_to_existing_roles,
     grant_usage_on_schema_to_existing_roles,
     refresh_existing_materialized_views,
 )
-from sales_op.runner import SalesOpRunSummary, run_sales_op
+from sales_op.runner import run_sales_op
 
 if TYPE_CHECKING:
     from sqlalchemy import Table
     from sqlalchemy.ext.asyncio import AsyncEngine
 
 LOGGER = get_logger("main")
+
+type ModuleRunner = Callable[[Settings], Awaitable[ModuleOutcome]]
+
+
+@dataclass(frozen=True, slots=True)
+class ModuleEntry:
+    """
+    Static per-module post-action config plus the runner that produces its outcome.
+
+    Adding a module is one ``ModuleEntry`` in ``_module_entries`` plus a runner
+    function returning ``ModuleOutcome``; ``_run_modules`` itself is unchanged.
+    """
+
+    code: str
+    schema_name: str
+    materialized_views: tuple[str, ...]
+    grant_users: tuple[str, ...]
+    runner: ModuleRunner
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,7 +116,7 @@ def _push_run_outcome_metrics(
             duration_seconds=duration_seconds,
             module_codes=[m.code for m in module_runs],
             failed_modules=module_failed_set,
-        )
+        ),
     )
 
 
@@ -124,9 +143,8 @@ async def _run_common_post_actions(settings: Settings, *, outcome: str) -> bool:
     if not selected_actions:
         return False
 
-    engine = create_postgres_engine(settings)
     has_errors = False
-    try:
+    async with postgres_session(settings) as engine:
         for action in selected_actions:
             try:
                 sql = await asyncio.to_thread(action.path.read_text, encoding="utf-8")
@@ -137,91 +155,100 @@ async def _run_common_post_actions(settings: Settings, *, outcome: str) -> bool:
                 has_errors = True
                 continue
             LOGGER.info("Общее пост-действие %s выполнено для состояния %s.", action.path, outcome)
-    finally:
-        await engine.dispose()
     return has_errors
 
 
+def _module_entries(settings: Settings) -> tuple[ModuleEntry, ...]:
+    """
+    Return the module registry, one entry per module, ordered as modules run.
+
+    Adding module #5 is a new ``ModuleEntry`` here plus a runner returning
+    ``ModuleOutcome``. ``_run_modules`` consumes this tuple and never needs
+    editing for a new module.
+    """
+    return (
+        ModuleEntry(
+            code="quotes_nsi",
+            schema_name=settings.quotes_nsi_schema,
+            materialized_views=settings.quotes_nsi_materialized_views,
+            grant_users=settings.quotes_nsi_grant_select_users,
+            runner=_run_quotes_nsi,
+        ),
+        ModuleEntry(
+            code="quotes",
+            schema_name=settings.quotes_schema,
+            materialized_views=settings.quotes_materialized_views,
+            grant_users=settings.quotes_grant_select_users,
+            runner=_run_quotes,
+        ),
+        ModuleEntry(
+            code="pd",
+            schema_name=settings.pd_schema,
+            materialized_views=settings.pd_materialized_views,
+            grant_users=settings.pd_grant_select_users,
+            runner=run_pd,
+        ),
+        ModuleEntry(
+            code="sales_op",
+            schema_name=settings.sales_op_schema,
+            materialized_views=settings.sales_op_materialized_views,
+            grant_users=settings.sales_op_grant_select_users,
+            runner=run_sales_op,
+        ),
+    )
+
+
 async def _run_modules(settings: Settings, modules: tuple[str, ...]) -> tuple[ModuleRun, ...]:
+    entries = {entry.code: entry for entry in _module_entries(settings)}
     module_runs: list[ModuleRun] = []
-    for module in modules:
-        token = set_log_module(module)
+    for code in modules:
+        entry = entries[code]
+        token = set_log_module(code)
         try:
-            if module == "quotes_nsi":
-                module_runs.append(await _run_dictionary_module(settings, module_code=module))
-            if module == "quotes":
-                module_runs.append(await _run_dictionary_module(settings, module_code=module))
-            if module == "pd":
-                module_runs.append(await _run_pd_module(settings))
-            if module == "sales_op":
-                module_runs.append(await _run_sales_op_module(settings))
+            outcome = await entry.runner(settings)
         finally:
             reset_log_module(token)
+
+        module_runs.append(
+            ModuleRun(
+                code=code,
+                schema_name=entry.schema_name,
+                has_errors=outcome.has_errors,
+                has_warnings=outcome.has_warnings,
+                has_format_changes=outcome.has_format_changes,
+                tables_to_grant=outcome.tables_to_grant,
+                relation_references_to_grant=outcome.relation_references_to_grant,
+                materialized_views=entry.materialized_views,
+                grant_users=entry.grant_users,
+            ),
+        )
 
     return tuple(module_runs)
 
 
-async def _run_dictionary_module(settings: Settings, *, module_code: str) -> ModuleRun:
-    is_quotes_nsi = module_code == "quotes_nsi"
-    module_config = settings.quotes_nsi if is_quotes_nsi else settings.quotes
-    summary: DictionaryRunSummary = await run_dictionaries(
+async def _run_quotes_nsi(settings: Settings) -> ModuleOutcome:
+    return await run_dictionaries(
         settings,
-        module_label="НСИ котировок" if is_quotes_nsi else "Котировки",
-        module_config=module_config,
-        dictionary_loaders=QUOTES_NSI_DICTIONARIES if is_quotes_nsi else QUOTES_DICTIONARIES,
-        combined_loaders=() if is_quotes_nsi else QUOTES_COMBINED_DICTIONARIES,
-        pattern_loaders=() if is_quotes_nsi else QUOTES_PATTERN_DICTIONARIES,
-    )
-    return ModuleRun(
-        code=module_code,
-        schema_name=module_config.schema_name,
-        has_errors=summary.has_errors,
-        has_warnings=summary.has_warnings,
-        has_format_changes=False,
-        tables_to_grant=summary.loaded_tables,
-        relation_references_to_grant=(),
-        materialized_views=(
-            settings.quotes_nsi_materialized_views if is_quotes_nsi else settings.quotes_materialized_views
-        ),
-        grant_users=module_config.users_to_grant,
+        module_label="НСИ котировок",
+        module_config=settings.quotes_nsi,
+        dictionary_loaders=QUOTES_NSI_DICTIONARIES,
     )
 
 
-async def _run_pd_module(settings: Settings) -> ModuleRun:
-    summary: PdRunSummary = await run_pd(settings)
-    tables = build_pd_tables(settings)
-    return ModuleRun(
-        code="pd",
-        schema_name=settings.pd_schema,
-        has_errors=summary.has_errors,
-        has_warnings=False,
-        has_format_changes=summary.has_format_changes,
-        tables_to_grant=(tables.assets, tables.materials, tables.indicators, tables.data, tables.change_log),
-        relation_references_to_grant=(pd_view_reference(settings),),
-        materialized_views=settings.pd_materialized_views,
-        grant_users=settings.pd_grant_select_users,
-    )
-
-
-async def _run_sales_op_module(settings: Settings) -> ModuleRun:
-    summary: SalesOpRunSummary = await run_sales_op(settings)
-    return ModuleRun(
-        code="sales_op",
-        schema_name=settings.sales_op_schema,
-        has_errors=summary.has_errors,
-        has_warnings=summary.has_warnings,
-        has_format_changes=False,
-        tables_to_grant=summary.loaded_tables,
-        relation_references_to_grant=(summary.view_reference,) if summary.view_reference else (),
-        materialized_views=settings.sales_op_materialized_views,
-        grant_users=settings.sales_op_grant_select_users,
+async def _run_quotes(settings: Settings) -> ModuleOutcome:
+    return await run_dictionaries(
+        settings,
+        module_label="Котировки",
+        module_config=settings.quotes,
+        dictionary_loaders=QUOTES_DICTIONARIES,
+        combined_loaders=QUOTES_COMBINED_DICTIONARIES,
+        pattern_loaders=QUOTES_PATTERN_DICTIONARIES,
     )
 
 
 async def _run_post_actions(settings: Settings, module_runs: tuple[ModuleRun, ...]) -> tuple[str, ...]:
-    engine = create_postgres_engine(settings)
     failed_modules: list[str] = []
-    try:
+    async with postgres_session(settings) as engine:
         for module_run in module_runs:
             if module_run.has_errors:
                 LOGGER.info(
@@ -236,8 +263,6 @@ async def _run_post_actions(settings: Settings, module_runs: tuple[ModuleRun, ..
             )
             if module_has_errors:
                 failed_modules.append(module_run.code)
-    finally:
-        await engine.dispose()
 
     return tuple(failed_modules)
 

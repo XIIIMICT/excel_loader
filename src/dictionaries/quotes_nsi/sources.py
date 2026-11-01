@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
 from excel_parser import build_dictionary_payload, read_single_sheet_frame

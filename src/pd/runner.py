@@ -6,11 +6,13 @@ from typing import TYPE_CHECKING
 from sqlalchemy.exc import InterfaceError, OperationalError
 
 from app_logging import get_logger
-from db import create_postgres_engine
+from db import postgres_session
 from dictionary_models import SourceHistoryEntry
 from excel_parser import read_workbook_metadata
+from module_models import ModuleOutcome
 from pd.db import PdLoadResult, load_report_to_db
 from pd.excel_parser import parse_report
+from pd.schema import build_pd_tables, pd_view_reference
 from pd.unsent import delete_unloaded_report, load_unloaded_reports, save_unloaded_report
 from source_history import prepare_source_history
 from source_resolver import SourceAuthError, SourceError, SourceFile, resolve_pattern_sources
@@ -27,26 +29,19 @@ DEFAULT_PD_FILE_PATTERN = r".*\.xlsx$"
 
 
 @dataclass(frozen=True, slots=True)
-class PdRunSummary:
-    has_errors: bool
-    has_format_changes: bool
-
-
-@dataclass(frozen=True, slots=True)
 class PdLoadAttempt:
     success: bool
     has_format_changes: bool
 
 
-async def run_pd(settings: Settings) -> PdRunSummary:
-    engine = create_postgres_engine(settings)
-    try:
+async def run_pd(settings: Settings) -> ModuleOutcome:
+    async with postgres_session(settings) as engine:
         history_table = await prepare_source_history(engine, users_to_grant=settings.pd_grant_select_users)
         unloaded_result = await _process_unloaded_reports(settings, engine, history_table=history_table)
         has_errors = not unloaded_result.success
         has_format_changes = unloaded_result.has_format_changes
         if has_errors:
-            return PdRunSummary(has_errors=True, has_format_changes=has_format_changes)
+            return _pd_outcome(settings, has_errors=True, has_format_changes=has_format_changes)
 
         try:
             with resolve_pattern_sources(
@@ -67,9 +62,18 @@ async def run_pd(settings: Settings) -> PdRunSummary:
             LOGGER.exception("PD: файлы не загружены из-за ошибки источника.")
             has_errors = True
 
-        return PdRunSummary(has_errors=has_errors, has_format_changes=has_format_changes)
-    finally:
-        await engine.dispose()
+        return _pd_outcome(settings, has_errors=has_errors, has_format_changes=has_format_changes)
+
+
+def _pd_outcome(settings: Settings, *, has_errors: bool, has_format_changes: bool) -> ModuleOutcome:
+    tables = build_pd_tables(settings)
+    return ModuleOutcome(
+        has_errors=has_errors,
+        has_warnings=False,
+        has_format_changes=has_format_changes,
+        tables_to_grant=(tables.assets, tables.materials, tables.indicators, tables.data, tables.change_log),
+        relation_references_to_grant=(pd_view_reference(settings),),
+    )
 
 
 async def _process_source_file(

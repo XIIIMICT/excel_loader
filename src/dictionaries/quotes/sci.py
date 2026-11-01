@@ -6,6 +6,7 @@ import pandas as pd
 from business_errors import CellTypeConversionError, SourceColumnMissingError
 from dictionary_models import CombinedDictionaryPayload, WorkbookMetadata
 from excel_parser import (
+    EXCEL_ENGINE,
     build_cell_locations,
     build_dictionary_payload,
     convert_excel_value,
@@ -67,7 +68,7 @@ def _read_source_frames(source_path: Path) -> tuple[list[pd.DataFrame], list[dic
     patterns = _sheet_patterns(source_path)
     frames: list[pd.DataFrame] = []
     locations: list[dict[str, str]] = []
-    with pd.ExcelFile(source_path) as workbook:
+    with pd.ExcelFile(source_path, engine=EXCEL_ENGINE) as workbook:
         selected_sheets = [
             sheet_name
             for sheet_name in workbook.sheet_names

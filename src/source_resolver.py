@@ -33,6 +33,21 @@ class SourceError(Exception):
     pass
 
 
+class SourceFileNotFoundError(SourceError):
+    """
+    A source file is missing on disk (or its IMAP attachment is absent).
+
+    Distinct from a generic ``SourceError`` (a fatal infra problem such as an
+    IMAP failure): a missing file is a WARNING + skip, not a load failure.
+    Catch ``except SourceFileNotFoundError`` **before** ``except SourceError``
+    so the skip path is type-driven, not matched on the Russian message text.
+    """
+
+    def __init__(self, source_path: Path) -> None:
+        super().__init__(f"файл не найден: {source_path}")
+        self.source_path = source_path
+
+
 class SourceAuthError(SourceError):
     pass
 
@@ -129,8 +144,7 @@ def _resolve_folder_source(*, data_dir: Path, pattern_or_path: PatternOrPath) ->
     if not source_path.is_absolute():
         source_path = data_dir / source_path
     if not source_path.exists():
-        msg = f"файл не найден: {source_path}"
-        raise SourceError(msg)
+        raise SourceFileNotFoundError(source_path)
     if not source_path.is_file():
         msg = f"источник не является файлом: {source_path}"
         raise SourceError(msg)

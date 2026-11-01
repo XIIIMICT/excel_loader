@@ -66,8 +66,12 @@ filterwarnings = [
 
 [tool.coverage.run]
 source = ["src"]
+branch = true
 relative_files = true
 omit = ["src/scripts/*"]
 
 [tool.coverage.report]
+# A10: regression floor, not a target — kept at 40 so a future module does not
+# fail the suite on arrival; add tests where behavior warrants them.
+fail_under = 40
 exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:"]

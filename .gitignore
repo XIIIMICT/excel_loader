@@ -19,7 +19,6 @@
 !/compose.*yaml
 !/infra/
 !/infra/**
-!/README.md
 !/prek.toml
 !/pyproject.toml
 !/uv.lock

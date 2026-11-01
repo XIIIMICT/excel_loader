@@ -1,20 +1,20 @@
-from __future__ import annotations
-
 import re
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from business_errors import SourceColumnMissingError, SourceFileNotFoundError
+from business_errors import SourceColumnMissingError
 from dictionary_models import CombinedDictionaryPayload, WorkbookMetadata
 from excel_parser import (
+    EXCEL_ENGINE,
     build_cell_locations,
     build_dictionary_payload,
     excel_column_name,
     read_sheet_names,
     read_workbook_metadata,
 )
+from source_resolver import SourceFileNotFoundError
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -63,7 +63,7 @@ def _read_source_frame(source_path: Path) -> tuple[pd.DataFrame, list[dict[str, 
         header=None,
         keep_default_na=False,
         na_filter=False,
-        engine="pyxlsb",
+        engine=EXCEL_ENGINE,
     )
     header_row = _find_header_row(raw_frame)
     header_values = [_normalize_header(value) for value in raw_frame.iloc[header_row]]

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator
     from email.message import EmailMessage, Message
 
     from config import PatternOrPath, Settings, SourcesConfig
@@ -44,7 +44,7 @@ def resolve_source(
     source_config: SourcesConfig,
     data_dir: Path,
     default_pattern_or_path: PatternOrPath,
-) -> Iterator[SourceFile]:
+) -> Generator[SourceFile]:
     if source_config.source == "local":
         yield _resolve_folder_source(data_dir=data_dir, pattern_or_path=default_pattern_or_path)
         return
@@ -72,7 +72,7 @@ def resolve_pattern_sources(
     source_config: SourcesConfig,
     data_dir: Path,
     default_file_pattern: str,
-) -> Iterator[tuple[SourceFile, ...]]:
+) -> Generator[tuple[SourceFile, ...]]:
     file_pattern = source_config.file_pattern or default_file_pattern
     if source_config.source == "local":
         yield _resolve_folder_sources_by_pattern(data_dir=data_dir, file_pattern=file_pattern)
@@ -99,7 +99,7 @@ def resolve_all_pattern_sources(
     data_dir: Path,
     default_file_pattern: str,
     recursive_local: bool = False,
-) -> Iterator[tuple[SourceFile, ...]]:
+) -> Generator[tuple[SourceFile, ...]]:
     file_pattern = source_config.file_pattern or default_file_pattern
     if source_config.source == "local":
         yield _resolve_folder_sources_by_pattern(
@@ -168,7 +168,7 @@ def _resolve_imap_sources(
     file_pattern: str,
     source_config: SourcesConfig,
     collect_all: bool = False,
-) -> Iterator[tuple[SourceFile, ...]]:
+) -> Generator[tuple[SourceFile, ...]]:
     host, user, password = _imap_credentials(settings)
     try:
         imap = imaplib.IMAP4_SSL(host, settings.imap.port)

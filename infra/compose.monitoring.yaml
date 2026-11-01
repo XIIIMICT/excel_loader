@@ -1,0 +1,62 @@
+# Наблюдательный стек Prometheus/Alertmanager/Pushgateway (профиль standalone).
+#
+# Loader — это пакетный CLI: он не держит живого /metrics-эндпоинта, поэтому
+# вместо scrape он пушит состояния запусков в Pushgateway
+# (см. src/metrics.py и переменную METRICS_PUSHGATEWAY_URL в .env).
+# Loki/Grafana/Alloy живут в infra/compose.external-services.yaml (профиль standalone).
+
+services:
+  pushgateway:
+    container_name: el-pushgateway
+    image: prom/pushgateway:v1.11.1
+    profiles: [standalone]
+    restart: unless-stopped
+    volumes:
+      - pushgateway-data:/data
+    networks: [net]
+    ports: ["9091:9091"]
+
+  prometheus:
+    container_name: el-prometheus
+    image: prom/prometheus:v3.5.0
+    profiles: [standalone]
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
+      - prometheus-data:/prometheus
+    networks: [net]
+    ports: ["9090:9090"]
+
+  alertmanager:
+    container_name: el-alertmanager
+    image: prom/alertmanager:v0.28.1
+    profiles: [standalone]
+    restart: unless-stopped
+    environment:
+      ALERT_SMTP_FROM: ${ALERT_SMTP_FROM:-}
+      ALERT_SMTP_SMARTHOST: ${ALERT_SMTP_SMARTHOST:-}
+      ALERT_SMTP_USER: ${ALERT_SMTP_USER:-}
+      ALERT_SMTP_PASSWORD: ${ALERT_SMTP_PASSWORD:-}
+      SUPPORT_MAIL: ${SUPPORT_MAIL:-}
+    volumes:
+      - ./alertmanager:/etc/alertmanager:ro
+      - alertmanager-data:/alertmanager
+    # entrypoint.sh рендерит конфиг в /tmp (rw-слой контейнера), поэтому
+    # /etc/alertmanager остаётся read-only.
+    entrypoint: ["/bin/sh", "/etc/alertmanager/entrypoint.sh"]
+    networks: [net]
+    ports: ["9093:9093"]
+
+volumes:
+  pushgateway-data:
+    name: el-pushgateway-data
+  prometheus-data:
+    name: el-prometheus-data
+  alertmanager-data:
+    name: el-alertmanager-data

@@ -1,0 +1,17 @@
+# Весь текст — LF и в репозитории, и в рабочих копиях, на любой ОС.
+# Переопределяет core.autocrlf: правки, написанные в LF, не дают «фантомных»
+# изменений и шума «LF will be replaced by CRLF».
+# На коммите это дополнительно подкрепляют prek-хуки (mixed-line-ending, BOM).
+* text=auto eol=lf
+
+# Явные бинарники — не нормализовать, не показывать текстовый diff.
+*.xlsb binary
+*.xlsx binary
+*.xls binary
+*.docx binary
+*.bin binary
+*.zip binary
+*.png binary
+*.jpeg binary
+*.jpg binary
+*.ico binary

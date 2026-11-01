@@ -36,6 +36,16 @@ schema_config:
 limits_config:
   allow_structured_metadata: true
   volume_enabled: true
+  # Retention must be set here AND the compactor below must be enabled:
+  # without the compactor the setting is inert and chunks are kept forever.
+  # 7 days matches the dashboards (compare today against last week).
+  retention_period: 168h
+
+compactor:
+  working_directory: /loki/compactor
+  delete_request_store: filesystem
+  retention_enabled: true
+  compaction_interval: 10m
 
 analytics:
   reporting_enabled: false

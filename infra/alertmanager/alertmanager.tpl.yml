@@ -1,0 +1,43 @@
+# Alertmanager: маршрутизация и доставка писем.
+#
+# `to`/`from`/`smarthost` рендерятся НА СТАРТЕ КОНТЕЙНЕРА entrypoint.sh
+# (sed поверх этого файла) из .env: Alertmanager НЕ расширяет ${VAR} в этих
+# полях, а --setenv не помогает. После правки .env нужен перезапуск стека
+# (`just monitoring`).
+#
+# Два проверенных нюанса (ReportCollector, 2026-10-27, письмо прошло):
+# 1. smarthost обязан быть портом с STARTTLS (587): 465 — неявный TLS,
+#    `smtp_require_tls` с ним несовместим;
+# 2. ALERT_SMTP_USER должен совпадать с адресом отправителя (ALERT_SMTP_FROM).
+
+global:
+  resolve_timeout: 5m
+  smtp_require_tls: true
+
+route:
+  receiver: support-mail
+  group_by: [alertname]
+  group_wait: 30s
+  group_interval: 4h
+  repeat_interval: 4h
+
+receivers:
+  - name: support-mail
+    email_configs:
+      - to: "${SUPPORT_MAIL}"
+        from: "${ALERT_SMTP_FROM}"
+        smarthost: "${ALERT_SMTP_SMARTHOST}"
+        auth_username: "${ALERT_SMTP_USER}"
+        auth_password: "${ALERT_SMTP_PASSWORD}"
+        send_resolved: true
+        headers:
+          Subject: "[Excel Loader] {{ .Status | toUpper }}: {{ .CommonLabels.alertname }}"
+        html: |
+          <h3>{{ .Status | toUpper }}: {{ .CommonLabels.alertname }} ({{ .CommonLabels.severity }})</h3>
+          {{ range .Alerts }}
+          <p><strong>{{ .Annotations.summary }}</strong></p>
+          <p>{{ .Annotations.description }}</p>
+          {{ end }}
+          <p>Дашборды: <a href="http://localhost:3000">Grafana</a> ·
+             <a href="http://localhost:9090/alerts">Prometheus</a> ·
+             <a href="http://localhost:9093">Alertmanager</a></p>

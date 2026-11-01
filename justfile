@@ -15,6 +15,12 @@ logging:
 logging-standalone:
     docker compose --profile standalone up -d loki grafana alloy
 
+monitoring:
+    # Полный наблюдательный стек: логи (Alloy→Loki→Grafana) + метрики
+    # (Pushgateway→Prometheus) + письма об ошибках (Alertmanager).
+    # Правка ALERT_SMTP_* в .env требует перезапуска: config рендерится на старте.
+    docker compose --profile standalone up -d loki grafana alloy prometheus pushgateway alertmanager
+
 db-standalone:
     docker compose --profile standalone up -d postgres
 

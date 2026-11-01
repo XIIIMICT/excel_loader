@@ -11,7 +11,6 @@ from business_errors import (
 )
 from dictionary_models import WorkbookMetadata
 from excel_parser import build_dictionary_payload
-from main import _filter_email_log_content
 
 
 def test_payload_without_primary_key_accepts_multiple_rows() -> None:
@@ -113,20 +112,6 @@ def test_custom_column_converter_is_applied() -> None:
 
     assert payload.rows[0]["date"] == date(2022, 1, 4)
     assert payload.rows[0]["price"] == 1.5
-
-
-def test_email_log_contains_only_warning_and_errors() -> None:
-    content = (
-        '{"level": "INFO", "message": "готово"}\n'
-        '{"level": "WARNING", "message": "предупреждение"}\n'
-        '{"level": "ERROR", "message": "ошибка"}'
-    )
-
-    filtered = _filter_email_log_content(content)
-
-    assert "готово" not in filtered
-    assert "предупреждение" in filtered
-    assert "ошибка" in filtered
 
 
 def test_required_value_error_contains_cell_and_value() -> None:

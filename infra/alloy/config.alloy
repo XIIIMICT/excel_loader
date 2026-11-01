@@ -24,6 +24,7 @@ loki.process "excel_loader" {
       "logger" = "logger",
       "module" = "module",
       "run_id" = "run_id",
+      "exception" = "exception",
       "time"   = "timestamp",
     }
   }
@@ -33,6 +34,15 @@ loki.process "excel_loader" {
       "level"  = "",
       "logger" = "",
       "module" = "",
+    }
+  }
+
+  stage.structured_metadata {
+    values = {
+      // Queryable but NOT labels: run_id is unique per run and exception is
+      // a multi-line value — either as a label would explode the Loki index.
+      "run_id"    = "run_id",
+      "exception" = "exception",
     }
   }
 

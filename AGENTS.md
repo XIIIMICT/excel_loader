@@ -4,7 +4,7 @@ Cheat sheet for agents. Read only the section you need; details — in `docs/*`.
 
 ## What it is
 
-An Excel-to-PostgreSQL loader. A single CLI process (`src/main.py`) runs the selected modules, then module post-actions (grants, materialized-view refresh), common post-actions, and optionally an email with the log.
+An Excel-to-PostgreSQL loader. A single CLI process (`src/main.py`) runs the selected modules, then module post-actions (grants, materialized-view refresh) and common post-actions. The loader sends no e-mail — alerts (incl. e-mail) are delivered by the monitoring stack (Alertmanager).
 
 - `quotes_nsi` — quotes reference data, `quotes` — quotes, `pd` — production summary, `sales_op` — per-client operational sales plans.
 - Python 3.14 + **uv**, SQLAlchemy/asyncpg, pandas/openpyxl/pyxlsb. Main code — `src/`.
@@ -24,6 +24,7 @@ An Excel-to-PostgreSQL loader. A single CLI process (`src/main.py`) runs the sel
 | Postgres for standalone | `just db-standalone` |
 | Seed PD reference data | `just seed` |
 | Logs (Alloy / Loki+Grafana) | `just logging` · `just logging-standalone` |
+| Full observability (Loki + Prometheus + Alertmanager) | `just monitoring` |
 
 Default modules — all four. `--quotes-nsi`, `--quotes`, `--pd`, `--sales-op` narrow the set; `--source local|imap` overrides the source for the selected modules.
 
@@ -41,6 +42,9 @@ Default modules — all four. `--quotes-nsi`, `--quotes`, `--pd`, `--sales-op` n
 10. **`src/scripts/seed.py` is the only seed script.** Shared schema/table helpers live in `src/storage.py`; don't create a new top-level `seed.py`.
 11. **PD parses only the first sheet** of a workbook (`_select_first_sheet`); other sheets are ignored. SCI stops reading at the first row without a date/product/brand — a blank separator row ends the data block rather than being treated as data.
 12. **`sales_op` is spec-driven.** Source codes, KHD tables and file masks live in `Спецификация sales_op_raw_view.xlsb` (sheet `спека`), not in code (`registry.py` was removed). A source without a file mask is ignored entirely (no file search, no table). The `Not Nullable` column says whether a target column is required: empty/falsy → optional (absent column or empty value → `NULL`), truthy (`Y`/`yes`/`да`/`true`/`1`/`+`) → the column must exist and every kept row must have a value, otherwise the file fails. The producer/seller row filter runs before the Not Nullable check.
+13. **Metrics push is opt-in.** `compose.yaml` passes `METRICS_PUSHGATEWAY_URL` to the loader; empty by default — the run pushes nothing until it is set in `.env` (see `infra/compose.monitoring.yaml`). The Alertmanager config is rendered from `ALERT_SMTP_*`/`SUPPORT_MAIL` **at container start** — after editing `.env` the monitoring stack must be restarted (`just monitoring`); smarthost must advertise STARTTLS (587) and `ALERT_SMTP_USER` must equal the sender mailbox.
+14. **Loader metrics are pushed, not scraped** — the process is a batch CLI: `src/metrics.py` pushes gauges (`el_loader_run_status`, `..._duration_seconds`, `..._last_success_seconds`, `..._module_status{module}`) to the Pushgateway in `infra/compose.monitoring.yaml`; alerts live in `infra/prometheus/alert-rules.yml` (thresholds assume daily runs).
+ Source codes, KHD tables and file masks live in `Спецификация sales_op_raw_view.xlsb` (sheet `спека`), not in code (`registry.py` was removed). A source without a file mask is ignored entirely (no file search, no table). The `Not Nullable` column says whether a target column is required: empty/falsy → optional (absent column or empty value → `NULL`), truthy (`Y`/`yes`/`да`/`true`/`1`/`+`) → the column must exist and every kept row must have a value, otherwise the file fails. The producer/seller row filter runs before the Not Nullable check.
 
 ## Working rules
 
@@ -52,10 +56,11 @@ Default modules — all four. `--quotes-nsi`, `--quotes`, `--pd`, `--sales-op` n
 
 ## Documentation
 
-- `docs/ARCHITECTURE.md` — the shared dictionary engine, config, sources (local/IMAP), storage and DDL, source history, post-actions, logs and email.
+- `docs/ARCHITECTURE.md` — the shared dictionary engine, config, sources (local/IMAP), storage and DDL, source history, post-actions, logs, metrics and alerts.
 - `docs/QUOTES.md` — the `quotes_nsi` and `quotes` modules: registries, files, mappings, primary keys.
 - `docs/PD.md` — `pd`: schema, parsing, `value_double`, `pd_view` and fallback, deferred packages.
 - `docs/SALES_OP.md` — `sales_op`: specification, file classification, normalization, `sales_op_raw_view`.
 - `docs/WORKFLOW.md` — environment, quality, prek, tests, languages, commits and branching.
+- `docs/AUDIT.md` — the November 2026 reanimation audit: lint fixes, adopted logging/monitoring, architecture roadmap.
 
 **When behavior changes, update the relevant file in `docs/` — that's a requirement, not a wish.**

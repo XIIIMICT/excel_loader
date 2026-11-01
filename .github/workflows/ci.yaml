@@ -17,13 +17,11 @@ concurrency:
 
 jobs:
   config:
-    name: Workflow and Compose validation
+    name: Compose validation
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
-      - name: Validate GitHub Actions
-        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.7 -color
       - name: Validate Compose
         env:
           POSTGRES_USER: postgres
@@ -77,6 +75,45 @@ jobs:
             test-results.xml
           retention-days: 7
 
+  dependencies:
+    name: Dependency review
+    # CodeQL смотрит на код, который МЫ пишем; здесь проверяем то, что мы ТЯНЕМ.
+    # Оценивается только diff PR: неизвестные в main-ветке пакеты не блокируются.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/dependency-review-action@v4
+        with:
+          # Заблокировать PR, вносящий уязвимый пакет.
+          fail-on-severity: moderate
+          comment-summary-in-pr: on-failure
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Полная история: секрет, закоммиченный и удалённый, остаётся в каждом
+          # клоне — скан без истории промахивается ровно по тому случаю утечки,
+          # который стоит ловить.
+          fetch-depth: 0
+      - name: Scan the history for secrets
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Находки репортим, не глушим: без GITLEAKS_CONFIG и allowlist-файла.
+          # Ложное срабатывание фиксируется в .gitleaks.toml с обоснованием,
+          # а не отключением проверки.
+          GITLEAKS_ENABLE_SUMMARY: true
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false
+
   production:
     name: Production image
     needs: config
@@ -110,7 +147,7 @@ jobs:
   required:
     name: CI required
     if: always()
-    needs: [config, quality, tests, production]
+    needs: [config, quality, tests, dependencies, secrets, production]
     runs-on: ubuntu-24.04
     timeout-minutes: 1
     steps:

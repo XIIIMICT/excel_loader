@@ -1,0 +1,55 @@
+# Алерты Excel Loader. Правила НЕ вимают POSTGRES/ведомственные —
+# только состояния запусков loader и живость наблюдательного стека.
+#
+# Loader — пакетный CLI: эл_loader_run_status остаётся последним значением
+# между запусками, а el_loader_run_last_success_seconds обновляется только
+# успешным запуском — по нему ловим «запуски не происходят вообще».
+#
+# Расписание запусков в месте эксплуатации знаете вы: порог 26 h ниже
+# рассчитан на ежедневный запуск — при другой частоте поднимите его.
+
+groups:
+  - name: excel_loader_runs
+    rules:
+      - alert: ExcelLoaderRunFailed
+        expr: el_loader_run_status >= 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Excel Loader: последний запуск с ошибками"
+          description: "`el_loader_run_status` = {{ $value }} (0 success, 1 partial_success, 2 failure)."
+      - alert: ExcelLoaderLastRunTooOld
+        expr: time() - el_loader_run_timestamp_seconds > 93600
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Excel Loader: запуски более 26 часов назад не было"
+          description: "Порог 26 h рассчитан на ежедневный запуск; скорректируйте при другой частоте."
+      - alert: ExcelLoaderNoSuccessfulRun
+        expr: time() - el_loader_run_last_success_seconds > 93600
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Excel Loader: более 26 часов без полностью успешного запуска"
+          description: "`el_loader_run_last_success_seconds` не обновился — все последние запуски с ошибками или не запусками."
+  - name: monitoring_stack
+    rules:
+      - alert: PushgatewayDown
+        expr: up{job="pushgateway"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pushgateway недоступен"
+          description: "Loader пушит метрики в Pushgateway; без него о состоянии запусков не видно."
+      - alert: PrometheusSelfScrapeDown
+        expr: up{job="prometheus"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Prometheus не слигивает себя"
+          description: "Санити-серия up — проверка живости самого коллектора."

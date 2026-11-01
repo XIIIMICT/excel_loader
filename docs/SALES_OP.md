@@ -73,4 +73,4 @@ Per run, one file is loaded per type/plan date:
 
 - A missing file type or an unparseable row is a `WARNING`; warnings do not fail the run and do not block post-actions. A missing required (Not Nullable) column or an empty required value is an error.
 - Errors: a missing/unreadable specification, an undeterminable date, a missing required column or value, a table-replacement failure, a view-creation failure. They set `has_errors = true`, but the remaining types keep being processed.
-- Only JSONL records with level `WARNING`, `ERROR`, `CRITICAL` are emailed.
+- Run failures go out as e-mail only through the Alertmanager of the monitoring stack (rule-driven); the loader itself does not mail anything.

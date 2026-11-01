@@ -11,22 +11,29 @@ id = "ruff-format"
 name = "ruff format"
 entry = "uv run ruff format"
 language = "system"
-files = '\.py$'
+files = '\\.py$'
+# Только захваченные файлы: форматирование всего дерева переписывает то, что
+# редактирует другой агент, и превращает чужой коммит в мерж-конфликт.
+require_serial = true
 
 [[repos.hooks]]
 id = "ruff-check"
 name = "ruff check"
-entry = "uv run ruff check"
+entry = "uv run ruff check --fix"
 language = "system"
-files = '\.py$'
+files = '\\.py$'
 
 [[repos.hooks]]
 id = "ty-check"
 name = "ty check"
+# `ty` — проектно-широкая проверка: импорты резолвятся по всему пакету,
+# сузить её до файла нельзя. prek при таком запуске застэшивает рабочее
+# дерево и ломает параллельных агентов, поэтому хук стал opt-in.
+# Он всё ещё обязателен в CI (`just typecheck`: ruff/format/ty, затем тесты).
 entry = "uv run ty check"
 language = "system"
+stages = ["manual"]
 pass_filenames = false
-files = '^(.*\.py|pyproject\.toml)$'
 
 [[repos.hooks]]
 id = "uv-lock"

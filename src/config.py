@@ -14,10 +14,32 @@ SRC_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = SRC_DIR.parent
 CONFIG_PATH = PROJECT_DIR / "config.toml"
 MAX_QUALIFIED_NAME_PARTS = 2
-QUOTES_NSI_SMTP_ERROR_SUBJECT = "НСИ котировок: предупреждения и ошибки загрузки"
-QUOTES_SMTP_ERROR_SUBJECT = "Котировки: предупреждения и ошибки загрузки"
-PD_SMTP_ERROR_SUBJECT = "ПД: ошибка загрузки производственной сводки"
-SALES_OP_SMTP_ERROR_SUBJECT = "План продаж: предупреждения и ошибки загрузки"
+
+
+class SmtpConfig(BaseModel):
+    """
+    Deprecated e-mail settings for the removed aiosmtplib path.
+
+    The loader sends no e-mail any more — alerts are delivered by the
+    Alertmanager in the monitoring stack. The fields stay here only so
+    legacy `config.toml` files keep loading until they are cleaned up.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    host: str | None = None
+    port: int | None = Field(default=None, ge=1, le=65535)
+    user: str | None = None
+    password: str | None = None
+    from_address: str | None = None
+
+    @model_validator(mode="after")
+    def normalize_optional_text(self) -> Self:
+        self.host = _strip_optional(self.host)
+        self.user = _strip_optional(self.user)
+        self.password = _strip_optional(self.password)
+        self.from_address = _strip_optional(self.from_address)
+        return self
 
 
 type PatternOrPath = str | Path
@@ -109,24 +131,6 @@ class ImapConfig(BaseModel):
         return self
 
 
-class SmtpConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    host: str | None = None
-    port: int | None = Field(default=None, ge=1, le=65535)
-    user: str | None = None
-    password: str | None = None
-    from_address: str | None = None
-
-    @model_validator(mode="after")
-    def normalize_optional_text(self) -> Self:
-        self.host = _strip_optional(self.host)
-        self.user = _strip_optional(self.user)
-        self.password = _strip_optional(self.password)
-        self.from_address = _strip_optional(self.from_address)
-        return self
-
-
 class PostActionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -158,6 +162,7 @@ class CommonConfig(BaseModel):
     timezone: str | None = None
     postgres: PostgresConfig = Field(default_factory=PostgresConfig)
     imap: ImapConfig = Field(default_factory=ImapConfig)
+    # Deprecated: the loader sends no e-mail (alerts go through Alertmanager).
     smtp: SmtpConfig = Field(default_factory=SmtpConfig)
     post_actions: tuple[PostActionConfig, ...] = ()
 
@@ -185,6 +190,7 @@ class ModuleBaseConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_name: str = Field(alias="schema", min_length=1)
+    # Deprecated: kept so legacy configs keep loading, no longer used.
     smtp_error_handling_on: bool = False
     smtp_recipients: tuple[str, ...] = ()
     mviews_to_refresh: tuple[str, ...] = ()
@@ -212,7 +218,6 @@ class Settings(BaseModel):
     @model_validator(mode="after")
     def validate_external_services(self) -> Self:
         _validate_imap_settings(self)
-        _validate_smtp_settings(self)
         return self
 
     @property
@@ -243,10 +248,6 @@ class Settings(BaseModel):
     @property
     def imap(self) -> ImapConfig:
         return self.common.imap
-
-    @property
-    def smtp(self) -> SmtpConfig:
-        return self.common.smtp
 
     @property
     def postgres_host(self) -> str:
@@ -287,42 +288,6 @@ class Settings(BaseModel):
     @property
     def sales_op_schema(self) -> str:
         return self.sales_op.schema_name
-
-    @property
-    def smtp_host(self) -> str | None:
-        return self.smtp.host
-
-    @property
-    def smtp_port(self) -> int | None:
-        return self.smtp.port
-
-    @property
-    def smtp_username(self) -> str | None:
-        return self.smtp.user
-
-    @property
-    def smtp_password_secret(self) -> str | None:
-        return self.smtp.password
-
-    @property
-    def smtp_from_address(self) -> str | None:
-        return self.smtp.from_address
-
-    @property
-    def quotes_nsi_smtp_error_subject(self) -> str:
-        return QUOTES_NSI_SMTP_ERROR_SUBJECT
-
-    @property
-    def quotes_smtp_error_subject(self) -> str:
-        return QUOTES_SMTP_ERROR_SUBJECT
-
-    @property
-    def pd_smtp_error_subject(self) -> str:
-        return PD_SMTP_ERROR_SUBJECT
-
-    @property
-    def sales_op_smtp_error_subject(self) -> str:
-        return SALES_OP_SMTP_ERROR_SUBJECT
 
     @property
     def quotes_nsi_materialized_views(self) -> tuple[str, ...]:
@@ -494,31 +459,4 @@ def _validate_imap_settings(settings: Settings) -> None:
         missing_fields.append("common.imap.password")
     if missing_fields:
         msg = f"Для IMAP-источника нужно заполнить: {', '.join(missing_fields)}."
-        raise ValueError(msg)
-
-
-def _validate_smtp_settings(settings: Settings) -> None:
-    if not any(
-        (
-            settings.quotes_nsi.smtp_error_handling_on,
-            settings.quotes.smtp_error_handling_on,
-            settings.pd.smtp_error_handling_on,
-            settings.sales_op.smtp_error_handling_on,
-        ),
-    ):
-        return
-
-    missing_fields = []
-    if settings.smtp.host is None:
-        missing_fields.append("common.smtp.host")
-    if settings.smtp.port is None:
-        missing_fields.append("common.smtp.port")
-    if settings.smtp.user is None:
-        missing_fields.append("common.smtp.user")
-    if settings.smtp.password is None:
-        missing_fields.append("common.smtp.password")
-    if settings.smtp.from_address is None:
-        missing_fields.append("common.smtp.from_address")
-    if missing_fields:
-        msg = f"Для отправки логов по SMTP нужно заполнить: {', '.join(missing_fields)}."
         raise ValueError(msg)

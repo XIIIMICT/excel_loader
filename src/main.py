@@ -1,15 +1,12 @@
 import argparse
 import asyncio
-import json
-import logging
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from aiosmtplib.errors import SMTPAuthenticationError
-
-from app_logging import configure_logging, flush_log_handlers, get_logger, reset_log_module, set_log_module
+from app_logging import configure_logging, get_logger, reset_log_module, set_log_module
 from config import Settings, load_settings
 from db import create_postgres_engine
 from dictionaries.quotes_nsi_registry import DICTIONARIES as QUOTES_NSI_DICTIONARIES
@@ -17,7 +14,7 @@ from dictionaries.quotes_registry import COMBINED_DICTIONARIES as QUOTES_COMBINE
 from dictionaries.quotes_registry import DICTIONARIES as QUOTES_DICTIONARIES
 from dictionaries.quotes_registry import PATTERN_DICTIONARIES as QUOTES_PATTERN_DICTIONARIES
 from dictionary_runner import DictionaryRunSummary, run_dictionaries
-from email_sender import send_log_email
+from metrics import build_run_metrics, push_run_metrics
 from pd.runner import PdRunSummary, run_pd
 from pd.schema import build_pd_tables, pd_view_reference
 from postgres import (
@@ -29,8 +26,6 @@ from postgres import (
 from sales_op.runner import SalesOpRunSummary, run_sales_op
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from sqlalchemy import Table
     from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -44,9 +39,6 @@ class ModuleRun:
     has_errors: bool
     has_warnings: bool
     has_format_changes: bool
-    smtp_error_handling_on: bool
-    smtp_recipients: tuple[str, ...]
-    smtp_subject: str
     tables_to_grant: tuple[Table, ...]
     relation_references_to_grant: tuple[str, ...]
     materialized_views: tuple[str, ...]
@@ -62,29 +54,50 @@ def main() -> int:
         return 2
 
     started_at = datetime.now(tz=settings.app_timezone)
-    log_path = configure_logging(settings, started_at)
-    return asyncio.run(_run_app(settings, args=args, log_path=log_path))
+    configure_logging(settings, started_at)
+    return asyncio.run(_run_app(settings, args=args))
 
 
-async def _run_app(settings: Settings, *, args: argparse.Namespace, log_path: Path) -> int:
+async def _run_app(settings: Settings, *, args: argparse.Namespace) -> int:
+    run_started_at = time.monotonic()
     module_runs = await _run_modules(settings, _selected_modules(args))
     post_action_failed_modules = await _run_post_actions(settings, module_runs)
     outcome = _module_run_outcome(module_runs, post_action_failed_modules=post_action_failed_modules)
     common_post_action_failed = await _run_common_post_actions(settings, outcome=outcome)
-    email_failed = await _send_error_emails(
-        settings,
-        module_runs=module_runs,
-        post_action_failed_modules=post_action_failed_modules,
-        log_path=log_path,
-        common_post_action_failed=common_post_action_failed,
-    )
-    return (
+    # The loader no longer e-mails errors: alerts are delivered by the
+    # monitoring stack (Alertmanager, see docs/ARCHITECTURE.md). If the stack
+    # is unreachable, the metrics push below logs the failure to the log file.
+    exit_code = (
         1
-        if email_failed
-        or common_post_action_failed
+        if common_post_action_failed
         or post_action_failed_modules
         or any(module_run.has_errors or module_run.has_format_changes for module_run in module_runs)
         else 0
+    )
+    _push_run_outcome_metrics(
+        module_runs,
+        outcome=outcome,
+        duration_seconds=time.monotonic() - run_started_at,
+    )
+    return exit_code
+
+
+def _push_run_outcome_metrics(
+    module_runs: tuple[ModuleRun, ...],
+    *,
+    outcome: str,
+    duration_seconds: float,
+) -> None:
+    module_failed_set = {
+        module_run.code for module_run in module_runs if module_run.has_errors or module_run.has_format_changes
+    }
+    push_run_metrics(
+        build_run_metrics(
+            outcome,
+            duration_seconds=duration_seconds,
+            module_codes=[m.code for m in module_runs],
+            failed_modules=module_failed_set,
+        )
     )
 
 
@@ -165,9 +178,6 @@ async def _run_dictionary_module(settings: Settings, *, module_code: str) -> Mod
         has_errors=summary.has_errors,
         has_warnings=summary.has_warnings,
         has_format_changes=False,
-        smtp_error_handling_on=module_config.smtp_error_handling_on,
-        smtp_recipients=module_config.smtp_recipients,
-        smtp_subject=(settings.quotes_nsi_smtp_error_subject if is_quotes_nsi else settings.quotes_smtp_error_subject),
         tables_to_grant=summary.loaded_tables,
         relation_references_to_grant=(),
         materialized_views=(
@@ -186,9 +196,6 @@ async def _run_pd_module(settings: Settings) -> ModuleRun:
         has_errors=summary.has_errors,
         has_warnings=False,
         has_format_changes=summary.has_format_changes,
-        smtp_error_handling_on=settings.pd.smtp_error_handling_on,
-        smtp_recipients=settings.pd.smtp_recipients,
-        smtp_subject=settings.pd_smtp_error_subject,
         tables_to_grant=(tables.assets, tables.materials, tables.indicators, tables.data, tables.change_log),
         relation_references_to_grant=(pd_view_reference(settings),),
         materialized_views=settings.pd_materialized_views,
@@ -204,9 +211,6 @@ async def _run_sales_op_module(settings: Settings) -> ModuleRun:
         has_errors=summary.has_errors,
         has_warnings=summary.has_warnings,
         has_format_changes=False,
-        smtp_error_handling_on=settings.sales_op.smtp_error_handling_on,
-        smtp_recipients=settings.sales_op.smtp_recipients,
-        smtp_subject=settings.sales_op_smtp_error_subject,
         tables_to_grant=summary.loaded_tables,
         relation_references_to_grant=(summary.view_reference,) if summary.view_reference else (),
         materialized_views=settings.sales_op_materialized_views,
@@ -403,87 +407,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Переопределить источник для выбранных модулей.",
     )
     return parser
-
-
-async def _send_error_emails(
-    settings: Settings,
-    *,
-    module_runs: tuple[ModuleRun, ...],
-    post_action_failed_modules: tuple[str, ...],
-    log_path: Path,
-    common_post_action_failed: bool,
-) -> bool:
-    email_failed = False
-    post_action_failed_module_set = set(post_action_failed_modules)
-    for module_run in module_runs:
-        should_send = (
-            module_run.has_errors
-            or module_run.has_warnings
-            or module_run.has_format_changes
-            or module_run.code in post_action_failed_module_set
-            or common_post_action_failed
-        )
-        if not should_send or not module_run.smtp_error_handling_on:
-            continue
-        if not module_run.smtp_recipients:
-            LOGGER.error("Не удалось отправить письмо с логом %s: список получателей пуст.", module_run.code)
-            email_failed = True
-            continue
-        email_failed = (
-            await _send_log_email(
-                settings,
-                log_path=log_path,
-                recipients=module_run.smtp_recipients,
-                subject=module_run.smtp_subject,
-            )
-            or email_failed
-        )
-
-    return email_failed
-
-
-async def _send_log_email(
-    settings: Settings,
-    *,
-    log_path: Path,
-    recipients: tuple[str, ...],
-    subject: str,
-) -> bool:
-    flush_log_handlers()
-    full_log_content = await asyncio.to_thread(log_path.read_text, encoding="utf-8")
-    log_content = _filter_email_log_content(full_log_content)
-    try:
-        await send_log_email(
-            settings,
-            log_content=log_content,
-            recipients=recipients,
-            subject=subject,
-        )
-    except SMTPAuthenticationError as error:
-        LOGGER.log(
-            logging.ERROR,
-            "Не удалось отправить письмо с логом получателям %s: ошибка SMTP-аутентификации: %s.",
-            ", ".join(recipients),
-            error,
-        )
-        return True
-    except Exception:
-        LOGGER.exception("Не удалось отправить письмо с логом получателям: %s.", ", ".join(recipients))
-        return True
-
-    return False
-
-
-def _filter_email_log_content(log_content: str) -> str:
-    selected_lines: list[str] = []
-    for line in log_content.splitlines():
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if payload.get("level") in {"WARNING", "ERROR", "CRITICAL"}:
-            selected_lines.append(line)
-    return "\n".join(selected_lines)
 
 
 if __name__ == "__main__":

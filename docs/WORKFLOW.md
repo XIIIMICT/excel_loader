@@ -4,10 +4,10 @@
 
 Python 3.14, package manager and runner — **uv**. The app runs in Docker Compose (`el-loader`); PostgreSQL and Loki are external services.
 
-1. Config: copy `config.example.toml` to `config.toml` and fill in PostgreSQL/IMAP/SMTP. `.env` is needed by Compose for container variables (Loki, optionally standalone Postgres/Grafana) and does **not** replace `config.toml`.
+1. Config: copy `config.example.toml` to `config.toml` and fill in PostgreSQL/IMAP. `.env` is needed by Compose for container variables (Loki, monitoring stack, optionally standalone Postgres/Grafana) and does **not** replace `config.toml`.
 2. Dependencies: `just deps` (`uv sync`).
 3. Run the CLI in Compose: `just loader --pd --source local` (image build — `just loader-build …`).
-4. External services for standalone: `just db-standalone` (Postgres), `just logging-standalone` (Loki + Grafana + Alloy), `just logging` (Alloy only).
+4. External services for standalone: `just db-standalone` (Postgres), `just logging-standalone` (Loki + Grafana + Alloy), `just logging` (Alloy only), `just monitoring` (full observability: also Pushgateway + Prometheus + Alertmanager; alert e-mail is rendered from `.env` at container start).
 5. Seed PD reference data: `just seed`.
 
 `POSTGRES_HOST` (when set) overrides `common.postgres.host`; `compose.yaml` mounts `./config.toml` to `/app/config.toml`. Stop the environment with `just down-standalone`, full cleanup (with volumes) with `just clean`.
@@ -24,18 +24,18 @@ Python 3.14, package manager and runner — **uv**. The app runs in Docker Compo
 
 - `ruff` with the `ALL` set and explicit exclusions (`pyproject.toml`): Cyrillic is allowed (`RUF001-003`), docstrings are optional (`D1xx`), TODO markers need no author (`TD002/003`, `FIX002`). `line-length = 120`, `target-version = py314`, formatting — LF, double quotes.
 - `ty check` — a static type checker (not mypy!). Type errors are a red flag.
-- `pytest`: `testpaths = ["tests"]`, `pythonpath = ["src"]`, `filterwarnings = ["error", ...]` — any unexpected warning is a failure (one openpyxl `Unknown extension…` warning is ignored for the `.xlsb` mock workbooks). Tests in `tests/` (`test_common.py`, `test_quotes_nsi.py`, `test_daily_excel.py`, `test_baiinfo.py`, `test_argus_pdf.py`, `test_argus_fc_exception.py`, `test_sci.py`, `test_sales_op.py`). Shared helpers/fixtures live in `tests/conftest.py` (`workbook_metadata`, `MOCK_DATA_DIR`). Parsing/mapping tests use mock data from `mock_data/` and need no database.
-- Coverage config lives in `pyproject.toml` (`[tool.coverage.run]`, `[tool.coverage.report]`), source `src`, `src/scripts/*` excluded. Run locally with `uv run pytest --cov=src --cov-branch --cov-report=term`. CI does not enforce a coverage threshold yet.
+- `pytest`: `testpaths = ["tests"]`, `pythonpath = ["src"]`, `filterwarnings = ["error", ...]` — any unexpected warning is a failure (one openpyxl `Unknown extension…` warning is ignored for the `.xlsb` mock workbooks). Tests in `tests/` (`test_common.py`, `test_quotes_nsi.py`, `test_daily_excel.py`, `test_baiinfo.py`, `test_argus_pdf.py`, `test_argus_fc_exception.py`, `test_sci.py`, `test_sales_op.py`, `test_metrics.py`). Shared helpers/fixtures live in `tests/conftest.py` (`workbook_metadata`, `MOCK_DATA_DIR`). Parsing/mapping tests use mock data from `mock_data/` and need no database.
+- Coverage config lives in `pyproject.toml` (`[tool.coverage.run]`, `[tool.coverage.report]`), source `src`, `src/scripts/*` excluded. Run locally with `uv run pytest --cov=src --cov-branch --cov-report=term`. CI does not enforce a coverage threshold yet (the audit proposes starting at 50% and raising it — see `docs/AUDIT.md`, A10).
 - `sales_op` tests read the specification and workbooks from `mock_data/sales_op`.
 - Tests must not touch production services. If a test needs a database, use a dedicated database/schema and clear it explicitly.
 
 ## Pre-commit (prek)
 
-The root `prek.toml` — ruff format, ruff check, ty check, uv lock (all via `uv run`) plus builtin hooks: large files, merge-conflict, yaml, eof, trailing whitespace, `mixed-line-ending --fix=lf`, `fix-byte-order-marker`. Install/run on `git commit` (`prek install`). If pre-commit fixed something itself, recheck the diff and commit again.
+The root `prek.toml` — ruff format (staged files only, `require_serial`), ruff check `--fix`, uv lock (all via `uv run`) plus builtin hooks: large files, merge-conflict, yaml, eof, trailing whitespace, `mixed-line-ending --fix=lf`, `fix-byte-order-marker`. **`ty check` is `stages = ["manual"]`**: `ty` resolves imports across the whole package, cannot narrow to staged files, and prek stashes the working tree to run such project-wide checks — that breaks parallel agents. It still runs on every change in CI and in `just check`. Install/run on `git commit` (`prek install`). If pre-commit fixed something itself, recheck the diff and commit again.
 
 ### Line endings and encoding (LF, UTF-8, no BOM)
 
-Write files as **UTF-8 without BOM**, line endings LF. prek (`mixed-line-ending --fix=lf`, `fix-byte-order-marker`) normalizes this on commit. `ruff.format.line-ending = "lf"`.
+Write files as **UTF-8 without BOM**, line endings LF. prek (`mixed-line-ending --fix=lf`, `fix-byte-order-marker`) normalizes this on commit; `.gitattributes` (`* text=auto eol=lf`) does the same at git level, overriding `core.autocrlf`. `ruff.format.line-ending = "lf"`.
 
 ## Tests and CI
 
@@ -45,8 +45,11 @@ Write files as **UTF-8 without BOM**, line endings LF. prek (`mixed-line-ending 
   - `config` — actionlint plus `docker compose --profile standalone config --quiet` validation.
   - `quality` — `uv sync --locked`, `ruff check`, `ruff format --check`, `ty check`.
   - `tests` — `pytest` with branch coverage and JUnit XML; reports uploaded as artifacts. All current tests are pure unit tests, so no database service is required.
+  - `dependencies` — PR-only dependency review (`actions/dependency-review-action`, `fail-on-severity: moderate`); fails a PR that introduces a known-vulnerable package.
+  - `secrets` — gitleaks over the **full history** (`fetch-depth: 0`): a deleted secret is still in every clone. Findings are reported, not suppressed; a false positive is fixed in `.gitleaks.toml` with a reason.
   - `production` — build the `prod` image, smoke-check it (`python -m compileall src`), and export it as an artifact on version tags.
   - `required` — a gate job that fails unless every job above succeeded. Configure **CI required** as the required branch-protection check; there are no path filters that could leave it pending.
+- `codeql.yaml` — CodeQL security analysis for `python` and `actions` on pushes/PRs to `main`/`dev` plus a weekly scheduled scan (new queries only exist there).
 - `docker-release.yaml` — on `vMAJOR.MINOR.PATCH` tags: run `ci.yaml` via `workflow_call`, then publish the exact image that passed CI to GHCR (`ghcr.io/<owner>/excel_loader`, version and full commit SHA tags). Images are not rebuilt after tests.
 - `dependabot.yaml` — weekly updates for github-actions, docker, docker-compose, uv (patch versions are ignored).
 
@@ -62,10 +65,10 @@ Language is chosen by audience — a rule, not a wish:
 | Code comments and docstrings | EN | code is read by agents; one language beats a mixed one |
 | Commit messages | EN | conventional commits; body Why/What/Verified — EN |
 | Agent documentation (`AGENTS.md`, `docs/*`) | EN | hot path: re-read on every task, EN costs fewer tokens |
-| User-facing strings: emails, log messages, error texts | RU | the product is for Russian users — this is content, **never translate it** |
+| User-facing strings: log messages, error texts | RU | the product is for Russian users — this is content, **never translate it** |
 | Log event names | EN | already the case |
 
-`AGENTS.md` and `docs/*` are maintained in English; log and email message text is Russian.
+`AGENTS.md` and `docs/*` are maintained in English; log message text is Russian.
 
 ## Branching and commits
 

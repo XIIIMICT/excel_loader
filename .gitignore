@@ -24,6 +24,7 @@
 !/pyproject.toml
 !/uv.lock
 !/justfile
+!/.gitattributes
 !/sql/
 !/sql/**
 !/data/

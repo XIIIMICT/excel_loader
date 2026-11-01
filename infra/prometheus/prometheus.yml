@@ -1,0 +1,30 @@
+# Prometheus: ломаем три серии источников — Pushgateway (состояния запусков),
+# сам Prometheus (санити-серия up) и внешний Postgres-экспортёр — и вешаем правила.
+# Конфиг НЕ расширяет ${VAR} из compose — порты и имена сервисов фиксируются здесь.
+#
+# Loader пушит в Pushgateway только при запуске (пакетный CLI): значения серии
+# сохраняются между запусками, поэтому прометеевский scrape забирает их каждые 15 s.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alert-rules.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  - job_name: pushgateway
+    # `honor_labels`: серии от loader уже содержат job=excel_loader и instance,
+    # попытка Prometheus перезаписать их перепутала бы статистику.
+    honor_labels: true
+    static_configs:
+      - targets: ["pushgateway:9091"]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

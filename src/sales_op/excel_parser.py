@@ -28,7 +28,7 @@ filterwarnings(
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator
     from datetime import tzinfo
     from pathlib import Path
 
@@ -276,7 +276,7 @@ class _RowContext:
 
 
 @contextmanager
-def _workbook_warnings_suppressed() -> Iterator[None]:
+def _workbook_warnings_suppressed() -> Generator[None]:
     with catch_warnings():
         simplefilter("ignore", UserWarning)
         yield

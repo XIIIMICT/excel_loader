@@ -40,7 +40,7 @@ One transaction:
 4. `create_or_replace_pd_view` — rebuild `pd_view` (below).
 5. Write to `pd_reference_change_log` (created entities + fallback view), a source-history row, `GRANT SELECT` on the view.
 
-`has_format_changes` = whether the change log has entries (a new entity or a fallback view). Format changes are logged as `ERROR` (and included in the email) but do not stop the load.
+`has_format_changes` = whether the change log has entries (a new entity or a fallback view). Format changes are logged as `ERROR` but do not stop the load.
 
 ## `pd_view` and fallback
 

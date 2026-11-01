@@ -8,7 +8,7 @@ loader (src/main.py)
   ├── _run_modules             quotes_nsi → quotes → pd → sales_op
   ├── _run_post_actions        grants + REFRESH MATERIALIZED VIEW (per module)
   ├── _run_common_post_actions [[common.post_actions]] by run outcome
-  └── _send_error_emails       SMTP when a module has smtp_error_handling_on
+  └── _push_run_outcome_metrics run gauges to the Pushgateway (opt-in)
         │
         ├── PostgreSQL (asyncpg/SQLAlchemy) — target tables + el.excel_loader_sources_history
         └── sources: local (data_dir) or imap (email attachments)
@@ -23,19 +23,19 @@ loader (src/main.py)
 3. Modules run in a fixed order: `quotes_nsi`, `quotes`, `pd`, `sales_op` (`_selected_modules`). With no flags — all four.
 4. Module post-actions: `USAGE` on the schema, `SELECT` on tables/relations, `REFRESH MATERIALIZED VIEW`. A module with errors (`has_errors`) skips its post-actions.
 5. Common post-actions (`[[common.post_actions]]`) run against the run outcome from `_module_run_outcome`: `success`, `partial_success` or `failure`; each action is selected by its own `run_on` (`always` also counts).
-6. The log email is sent when a module has errors, warnings, a format change, a failed post-action, or a failed common post-action — and `smtp_error_handling_on = true`. Only JSONL lines with level `WARNING`, `ERROR`, `CRITICAL` are emailed.
+6. Run metrics are pushed to the Pushgateway when `METRICS_PUSHGATEWAY_URL` is set (see "Logs, metrics and alerts"). The loader itself sends no e-mail: error reports are delivered by the Alertmanager of the monitoring stack, which reacts to the pushed metrics — if the stack is unreachable, the failed push is logged (`ERROR`) to the run log file and no e-mail goes out.
 
-Exit code `0` only when no module has errors/format changes and no post-action or email failed. Otherwise `1`; a settings-read failure — `2`.
+Exit code `0` only when no module has errors/format changes and no post-action failed. Otherwise `1`; a settings-read failure — `2`.
 
 ## Configuration (`config.toml`)
 
 `config.py`. TOML, `extra="forbid"`: an unknown key is a validation error. Relative paths (`log_dir`, `unloaded_data_dir`, `mock_data_dir`, `data_dir`, post-action `path`) resolve against the project root. The file is read as `utf-8-sig` (BOM tolerated).
 
-- `[common]`: `log_dir`, `unloaded_data_dir`, `mock_data_dir`, `timezone` (empty/`null` → system), `[common.postgres]` (`host`/`port`/`user`/`password`/`db`/`schema`), `[common.imap]` (`host`/`port`/`user`/`password`/`mailbox`/`scan_depth`), `[common.smtp]` (`host`/`port`/`user`/`password`/`from_address`), `[[common.post_actions]]` (`path`, `run_on`).
-- Module blocks `[quotes_nsi]`, `[quotes]`, `[pd]`, `[sales_op]`: `schema`, `smtp_error_handling_on`, `smtp_recipients`, `mviews_to_refresh`, `users_to_grant`, `[<module>.sources]`.
+- `[common]`: `log_dir`, `unloaded_data_dir`, `mock_data_dir`, `timezone` (empty/`null` → system), `[common.postgres]` (`host`/`port`/`user`/`password`/`db`/`schema`), `[common.imap]` (`host`/`port`/`user`/`password`/`mailbox`/`scan_depth`), `[common.smtp]` (deprecated, ignored — legacy files keep loading until cleaned), `[[common.post_actions]]` (`path`, `run_on`).
+- Module blocks `[quotes_nsi]`, `[quotes]`, `[pd]`, `[sales_op]`: `schema`, `smtp_error_handling_on`/`smtp_recipients` (deprecated, ignored), `mviews_to_refresh`, `users_to_grant`, `[<module>.sources]`.
 - `sources`: `data_dir` (required), `source = "local" | "imap"`, `file_pattern`, `imap_subject_pattern`. Regexes compile with `IGNORECASE`; their syntax is validated first.
 - `mviews_to_refresh` — names `name` or `schema.name`; without a schema the module's `schema` is prepended. Duplicates and more than two parts are errors.
-- External-service validation: if any module reads from IMAP, `common.imap.host/user/password` and that module's `imap_subject_pattern` are required; if a module enables SMTP, all `common.smtp.*` are required.
+- External-service validation: if any module reads from IMAP, `common.imap.host/user/password` and that module's `imap_subject_pattern` are required.
 - Environment override: `POSTGRES_HOST` (when set) replaces `common.postgres.host`. There are no other env overrides.
 - In Compose `./config.toml` is always mounted to `/app/config.toml`; `compose.yaml` sets `POSTGRES_HOST` (default `host.docker.internal`). `LOADER_CONFIG_PATH` is unused.
 
@@ -126,8 +126,30 @@ Errors and warnings must point at the real cell in the source workbook, not at a
 - `mviews_to_refresh`: `REFRESH MATERIALIZED VIEW` when the view exists; otherwise skip with a log entry. A refresh failure is a failed module post-action.
 - `[[common.post_actions]]`: an arbitrary SQL file (`path`) executed after the module post-actions against the run outcome (`run_on`: `success`/`partial_success`/`always`). Example — `sql/post_actions/assign_object_owner.sql`.
 
-## Logs and email
+## Logs, metrics and alerts
 
-- `app_logging.py` writes JSON Lines to `logs/*.log`; the module code is attached to the log (`set_log_module`).
-- Only `WARNING`, `ERROR`, `CRITICAL` records are emailed via SMTP (`_filter_email_log_content`). SMTP is notifications only, never a data source.
-- `compose.yaml` forwards logs to `LOKI_URL` via Alloy; `infra/` holds the Alloy/Loki/Grafana configs. The external service must be reachable at `LOKI_URL` (for example via a published host port).
+- `app_logging.py` writes JSON Lines to `logs/<timestamp>.log` (one file per run); the module code is attached to the log (`set_log_module`). At startup the folder is pruned: `.log` files older than `LOG_RETENTION_DAYS = 14` are removed (the folder grows unboundedly otherwise).
+- The loader sends no e-mail of its own: run reports and error notifications are delivered by the Alertmanager of the monitoring stack (see below). Its own SMTP path (aiosmtplib) was removed; `config.toml` still accepts the legacy `common.smtp` block and per-module `smtp_*` flags until those files are cleaned up, but they are ignored.
+- `compose.yaml` forwards logs to `LOKI_URL` via Alloy; `infra/` holds the Alloy/Loki/Grafana/Prometheus/Alertmanager configs. The external service must be reachable at `LOKI_URL` (for example via a published host port).
+- Loki keeps logs 7 days: `infra/loki/config.yaml` sets `retention_period: 168h` **and** enables the `compactor` — without the compactor the retention setting is inert and chunks are never deleted.
+- `infra/alloy/config.alloy` promotes `level`/`module` into labels and keeps `run_id` plus `exception` as Loki structured metadata (queryable, but not labels — a label per run would explode the index). Trace a run end to end: `{job="excel_loader"} | run_id="<run_id>"`.
+
+### Metrics (opt-in, Pushgateway)
+
+The loader is a batch CLI: it exits, so Prometheus cannot scrape it. When
+`METRICS_PUSHGATEWAY_URL` is set (empty default in `compose.yaml`), the run
+pushes (via `src/metrics.py`) gauges to the Pushgateway
+(`infra/compose.monitoring.yaml`, profile `standalone`): `el_loader_run_status`
+(0 success / 1 partial_success / 2 failure), `el_loader_run_duration_seconds`,
+`el_loader_run_timestamp_seconds`, `el_loader_run_last_success_seconds` (pushed
+only on success — the Pushgateway keeps the previous value, which is what makes
+"no successful run for N hours" detectable) and `el_loader_module_status{module}`
+(1 failed) for the selected modules. Each push replaces the previous series
+(single grouping key), Prometheus (15 s scrape, 15-day retention) keeps the run
+history. Push failures are logged ERROR and never change the exit code.
+
+### Alerts and dashboards
+
+- `infra/prometheus/alert-rules.yml`: `ExcelLoaderRunFailed`, `ExcelLoaderLastRunTooOld`, `ExcelLoaderNoSuccessfulRun` (all thresholds assume **daily** runs, 26 h) and `PushgatewayDown` / `PrometheusSelfScrapeDown` for the stack itself. Alertmanager (`infra/alertmanager/`, port 9093) groups them (30 s wait, 4 h repeat) and delivers e-mail; its config is **rendered from `.env` at container start** — edit `ALERT_SMTP_*`/`SUPPORT_MAIL`, then restart the stack. Smarthost must be 587 (STARTTLS); `ALERT_SMTP_USER` must equal the sender mailbox.
+- Grafana (`infra/grafana/`): Loki datasource + Prometheus datasource + the provisioned dashboard `excel-loader-overview` (run status, duration, age of the last successful run, per-module statuses, warnings heatmap, warning/error log panel). Dashboards come from git — edit the JSON, not the browser.
+- `just monitoring` starts the whole observability stack; `just logging` / `just logging-standalone` remain log-only.

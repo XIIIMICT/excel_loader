@@ -29,18 +29,8 @@ mailbox = "INBOX"
 # Сканируются только последние N писем.
 scan_depth = 30
 
-[common.smtp]
-# SMTP используется только для уведомлений об ошибках, если модуль включает smtp_error_handling_on.
-host = "smtp.example.com"
-port = 587
-user = "dev-mail@ruschem.ru"
-password = "strong_password"
-from_address = "dev-mail@ruschem.ru"
-
 [quotes_nsi]
 schema = "el"
-smtp_error_handling_on = false
-smtp_recipients = ["s.scorpi-on@ya.ru"]
 mviews_to_refresh = []
 users_to_grant = []
 
@@ -52,8 +42,6 @@ imap_subject_pattern = "НСИ"
 
 [quotes]
 schema = "el"
-smtp_error_handling_on = false
-smtp_recipients = ["s.scorpi-on@ya.ru"]
 mviews_to_refresh = []
 users_to_grant = []
 
@@ -65,8 +53,6 @@ imap_subject_pattern = "Котировки"
 
 [pd]
 schema = "el"
-smtp_error_handling_on = false
-smtp_recipients = ["s.scorpi-on@ya.ru"]
 mviews_to_refresh = []
 users_to_grant = []
 
@@ -78,8 +64,6 @@ imap_subject_pattern = "производственная сводка"
 
 [sales_op]
 schema = "el"
-smtp_error_handling_on = false
-smtp_recipients = ["s.scorpi-on@ya.ru"]
 mviews_to_refresh = []
 users_to_grant = []
 

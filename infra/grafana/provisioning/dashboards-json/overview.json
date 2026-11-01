@@ -1,0 +1,136 @@
+{
+  "uid": "excel-loader-overview",
+  "title": "Excel Loader — Состояние загрузок",
+  "tags": ["excel_loader"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "1m",
+  "time": { "from": "now-24h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Итог последнего запуска",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "excel-loader-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "max(el_loader_run_status)" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "Успех", "color": "green" }, "1": { "text": "Частичный успех", "color": "orange" }, "2": { "text": "Ошибка", "color": "red" } } }
+          ]
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["last"] } }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Длительность последнего запуска",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "excel-loader-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "max(el_loader_run_duration_seconds)" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s", "decimals": 1 },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["last"] } }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "С последнего успешного запуска",
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "excel-loader-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "time() - max(el_loader_run_last_success_seconds)" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 90000 },
+              { "color": "red", "value": 100800 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["last"] } }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Последний запуск",
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "excel-loader-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "time() - el_loader_run_timestamp_seconds" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 93600 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["last"] } }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Статусы модулей (1 = ошибка)",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "excel-loader-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "el_loader_module_status", "legendFormat": "{{module}}" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "stepAfter": null, "_drawStyle": "line", "lineInterpolation": "stepAfter", "fillOpacity": 15, "min": 0, "max": 1 }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Предупреждения по модулям (логи)",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 6 },
+      "datasource": { "type": "loki", "uid": "excel-loader-loki" },
+      "targets": [
+        { "refId": "A", "expr": "sum by (module) (count_over_time({job=\"excel_loader\", level=\"WARNING\"} | level=\"WARNING\" [$__auto]))", "queryType": "range" }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "_drawStyle": "bars", "fillOpacity": 50 } },
+        "overrides": []
+      }
+    },
+    {
+      "id": 7,
+      "type": "logs",
+      "title": "Предупреждения и ошибки (логи)",
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 15 },
+      "datasource": { "type": "loki", "uid": "excel-loader-loki" },
+      "targets": [
+        { "refId": "A", "expr": "{job=\"excel_loader\"} | level=~\"WARNING|ERROR|CRITICAL\"", "queryType": "range" }
+      ],
+      "options": { "sortOrder": "Descending", "wrapLogMessage": true }
+    }
+  ]
+}

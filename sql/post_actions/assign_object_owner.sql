@@ -10,7 +10,7 @@ BEGIN
         JOIN pg_roles AS owner_role ON relation.relowner = owner_role.oid
         WHERE namespace.nspname IN ('raw', 'dict', 'el')
           AND relation.relkind IN ('r', 'v', 'm')
-          AND owner_role.rolname = 'shoshin'
+          AND owner_role.rolname = 'evtushenko'
     LOOP
         -- В PostgreSQL ALTER TABLE применим также к VIEW и MATERIALIZED VIEW.
         EXECUTE format(

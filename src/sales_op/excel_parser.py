@@ -9,8 +9,14 @@ from openpyxl.utils import get_column_letter
 from openpyxl.utils.datetime import from_excel
 
 from app_logging import get_logger
-from business_errors import CellTypeConversionError
-from excel_parser import EXCEL_ERROR_VALUES, convert_excel_value, load_openpyxl_workbook, read_workbook_metadata
+from business_errors import CellTypeConversionError, FileMetadataMissingError
+from excel_parser import (
+    EXCEL_ERROR_VALUES,
+    convert_excel_value,
+    load_openpyxl_workbook,
+    read_core_properties,
+    read_workbook_metadata,
+)
 from sales_op.models import (
     ParsedSalesOpFile,
     SalesOpColumnMapping,
@@ -49,7 +55,7 @@ def inspect_sales_op_workbook(
         marker_row, marker_column = _find_plan_marker(worksheet)
         plan_date = _parse_plan_date(worksheet.cell(marker_row, marker_column + 1).value)
         metadata = read_workbook_metadata(source_path, timezone=timezone)
-        modified_at = _workbook_modified_at(workbook, metadata)
+        modified_at = _workbook_modified_at(source_path, metadata)
         return plan_date, modified_at, metadata
     finally:
         workbook.close()
@@ -68,7 +74,7 @@ def parse_sales_op_workbook(
         marker_row, marker_column = _find_plan_marker(worksheet)
         plan_date = _parse_plan_date(worksheet.cell(marker_row, marker_column + 1).value)
         workbook_metadata = metadata or read_workbook_metadata(source_path, timezone=UTC)
-        modified_at = _workbook_modified_at(workbook, workbook_metadata)
+        modified_at = _workbook_modified_at(source_path, workbook_metadata)
         header_row = marker_row + 1
         headers = tuple(cell.value for cell in next(worksheet.iter_rows(min_row=header_row, max_row=header_row)))
         first_column, last_column = _find_header_bounds(headers)
@@ -134,10 +140,24 @@ def _first_visible_sheet(workbook: Workbook) -> Worksheet:
     return worksheet
 
 
-def _workbook_modified_at(workbook: Workbook, metadata: WorkbookMetadata) -> datetime:
-    modified_at = workbook.properties.modified
+def _workbook_modified_at(source_path: Path, metadata: WorkbookMetadata) -> datetime:
+    """
+    Naive workbook modification moment for the source history.
+
+    Openpyxl's ``properties.modified`` is replaced by the shared
+    ``docProps/core.xml`` reader. A package without a readable core part
+    (some workbook writers leave it out) falls back to the file mtime, the
+    way the openpyxl ``None`` used to. Aware timestamps are normalized to
+    naive UTC like openpyxl did; a timezone-free value keeps its own hour.
+    """
+    try:
+        modified_at = read_core_properties(source_path).modified
+    except FileMetadataMissingError:
+        modified_at = None
     if isinstance(modified_at, datetime):
-        return modified_at
+        if modified_at.tzinfo is None:
+            return modified_at
+        return modified_at.astimezone(UTC).replace(tzinfo=None)
     return metadata.file_modified_at.replace(tzinfo=None)
 
 

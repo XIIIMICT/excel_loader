@@ -3,7 +3,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, tzinfo
 from numbers import Number
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 from warnings import catch_warnings, filterwarnings
 from zipfile import BadZipFile, ZipFile
 
@@ -30,19 +30,19 @@ if TYPE_CHECKING:
     from openpyxl.workbook.workbook import Workbook
 
 TEXT_COLUMN_KIND = "text"
-XLSB_SUFFIX = ".xlsb"
 OOXML_CORE_PROPERTIES_PATH = "docProps/core.xml"
 OOXML_NAMESPACES = {
     "cp": "http://schemas.openxmlformats.org/package/2006/metadata/core-properties",
     "dc": "http://purl.org/dc/elements/1.1/",
+    "dcterms": "http://purl.org/dc/terms/",
 }
 EXCEL_ERROR_VALUES = {"#NULL!", "#DIV/0!", "#VALUE!", "#REF!", "#NAME?", "#NUM!", "#N/A", "#GETTING_DATA"}
 ORIGIN_ATTR = "xls_origin"
 OPENPYXL_EXTENSION_WARNING = ".* extension is not supported and will be removed"
 # pandas engine for every dictionary value frame: the native `calamine` engine
 # (python-calamine) reads `.xlsx` and `.xlsb` with value parity versus the
-# previous openpyxl/pyxlsb reads (verified over `mock_data/`, see docs/AUDIT.md),
-# while the pyxlsb engine is deprecated in pandas.
+# previous openpyxl/pyxlsb reads (verified over `mock_data/`), while the
+# pyxlsb engine is deprecated in pandas.
 EXCEL_ENGINE = "calamine"
 type CellValueConverter = Callable[[object], DbValue]
 LOGGER = get_logger("excel")
@@ -128,8 +128,8 @@ def load_openpyxl_workbook(
 
     openpyxl 3.1 reads every format but emits ``"Unknown extension … will be
     removed"`` for parts it ignores (e.g. inside ``.xlsb`` mocks). The
-    warning is silenced with a scoped ``catch_warnings`` block (audit A7 and
-    follow-up E4) instead of a module-level ``filterwarnings``. Parsing
+    warning is silenced with a scoped ``catch_warnings`` block instead of a
+    module-level ``filterwarnings``. Parsing
     modes stay per-caller: PD loads fully materialized books, sales_op opens
     read-only value copies.
     """
@@ -143,49 +143,77 @@ def load_openpyxl_workbook(
         return load_workbook(source_path, data_only=data_only, read_only=read_only, keep_links=keep_links)
 
 
-def read_workbook_metadata(source_path: Path, *, timezone: tzinfo) -> WorkbookMetadata:
-    if not source_path.exists():
-        raise SourceFileNotFoundError(source_path)
+@dataclass(frozen=True, slots=True)
+class WorkbookCoreProperties:
+    """
+    Core properties of a zip-based OOXML package (``docProps/core.xml``).
 
-    if source_path.suffix.lower() == XLSB_SUFFIX:
-        file_modifier = _read_xlsb_user_name(source_path)
-    else:
-        file_modifier = _read_openpyxl_user_name(source_path)
+    The same part carries the workbook metadata for every zip-based format
+    (``.xlsx``/``.xlsm``/``.xlsb``): creator/last-modified-by for source
+    history plus the created/modified timestamps. ``created``/``modified``
+    are ``datetime.fromisoformat`` parses of the XML values and keep the
+    stored offset when one is present; fields absent from the package are
+    ``None``.
+    """
 
-    return WorkbookMetadata(
-        file_modifier=file_modifier,
-        file_modified_at=datetime.fromtimestamp(source_path.stat().st_mtime, tz=timezone),
-        loaded_at=datetime.now(tz=timezone),
+    creator: str | None
+    last_modified_by: str | None
+    created: datetime | None
+    modified: datetime | None
+
+
+def read_core_properties(source_path: Path) -> WorkbookCoreProperties:
+    """
+    Read ``docProps/core.xml`` from an OOXML package.
+
+    The shared metadata reader for the calamine step: one zip part serves
+    every format, so openpyxl is not opened just for metadata. The file is
+    reopened by path even when a workbook copy is already open — share-read
+    is safe and no handles are kept.
+    """
+    try:
+        with ZipFile(source_path) as workbook_archive:
+            root = fromstring(workbook_archive.read(OOXML_CORE_PROPERTIES_PATH))
+    except (BadZipFile, KeyError, ParseError) as error:
+        raise FileMetadataMissingError from error
+
+    return WorkbookCoreProperties(
+        creator=root.findtext("dc:creator", namespaces=OOXML_NAMESPACES),
+        last_modified_by=root.findtext("cp:lastModifiedBy", namespaces=OOXML_NAMESPACES),
+        created=_parse_core_timestamp(root.findtext("dcterms:created", namespaces=OOXML_NAMESPACES)),
+        modified=_parse_core_timestamp(root.findtext("dcterms:modified", namespaces=OOXML_NAMESPACES)),
     )
 
 
-def _read_openpyxl_user_name(source_path: Path) -> str:
-    workbook = load_openpyxl_workbook(source_path, data_only=True, read_only=True)
+def _parse_core_timestamp(timestamp: str | None) -> datetime | None:
+    if timestamp is None:
+        return None
     try:
-        # openpyxl types these through NestedText descriptors; the values are plain strings at runtime.
-        return _extract_user_name(
-            last_modified_by=cast("str | None", workbook.properties.lastModifiedBy),
-            creator=cast("str | None", workbook.properties.creator),
-        )
-    finally:
-        workbook.close()
-
-
-def _read_xlsb_user_name(source_path: Path) -> str:
-    try:
-        with ZipFile(source_path) as workbook_archive:
-            core_properties = workbook_archive.read(OOXML_CORE_PROPERTIES_PATH)
-    except (BadZipFile, KeyError) as error:
+        return datetime.fromisoformat(timestamp)
+    except ValueError as error:
         raise FileMetadataMissingError from error
 
-    try:
-        root = fromstring(core_properties)
-    except ParseError as error:
-        raise FileMetadataMissingError from error
 
-    last_modified_by = root.findtext("cp:lastModifiedBy", namespaces=OOXML_NAMESPACES)
-    creator = root.findtext("dc:creator", namespaces=OOXML_NAMESPACES)
-    return _extract_user_name(last_modified_by=last_modified_by, creator=creator)
+def read_workbook_metadata(source_path: Path, *, timezone: tzinfo) -> WorkbookMetadata:
+    """
+    Workbook metadata for the source history.
+
+    ``read_core_properties`` serves every zip-based OOXML format, so
+    ``file_modifier`` comes from the same ``docProps/core.xml`` part for
+    ``.xlsx`` and ``.xlsb``.
+    """
+    if not source_path.exists():
+        raise SourceFileNotFoundError(source_path)
+
+    core_properties = read_core_properties(source_path)
+    return WorkbookMetadata(
+        file_modifier=_extract_user_name(
+            last_modified_by=core_properties.last_modified_by,
+            creator=core_properties.creator,
+        ),
+        file_modified_at=datetime.fromtimestamp(source_path.stat().st_mtime, tz=timezone),
+        loaded_at=datetime.now(tz=timezone),
+    )
 
 
 def read_single_sheet_frame(

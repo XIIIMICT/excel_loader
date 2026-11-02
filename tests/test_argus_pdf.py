@@ -1,18 +1,21 @@
 from datetime import date
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from business_errors import DuplicatePrimaryKeyError
-from config import load_settings
 from dictionaries.quotes.argus_pdf import build_payload
+
+if TYPE_CHECKING:
+    from config import Settings
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 SOURCE_PATH = PROJECT_DIR / "mock_data" / "quotes" / "Argus PDF" / "Argus PDF Удобрения.xlsb"
 
 
-def test_builds_argus_pdf_payload_with_typed_columns() -> None:
-    payload = build_payload(load_settings(), (SOURCE_PATH,)).payload
+def test_builds_argus_pdf_payload_with_typed_columns(settings: Settings) -> None:
+    payload = build_payload(settings, (SOURCE_PATH,)).payload
 
     assert payload.table_reference == "el.quotes_excel_argus_pdf"
     assert payload.primary_key_columns == ("rep_date", "prod_version")
@@ -31,6 +34,6 @@ def test_builds_argus_pdf_payload_with_typed_columns() -> None:
     assert payload.rows[1]["rep_date"] == date(2025, 11, 4)
 
 
-def test_duplicate_rep_date_and_prod_version_raise_integrity_error() -> None:
+def test_duplicate_rep_date_and_prod_version_raise_integrity_error(settings: Settings) -> None:
     with pytest.raises(DuplicatePrimaryKeyError):
-        build_payload(load_settings(), (SOURCE_PATH, SOURCE_PATH))
+        build_payload(settings, (SOURCE_PATH, SOURCE_PATH))

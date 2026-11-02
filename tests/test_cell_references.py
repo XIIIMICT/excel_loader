@@ -4,20 +4,19 @@ from typing import TYPE_CHECKING
 import pytest
 
 from business_errors import DuplicateCellValueError, RequiredCellValueError
-from config import load_settings
 from excel_parser import build_dictionary_payload, frame_origin, read_single_sheet_frame, select_columns_between
 
 if TYPE_CHECKING:
     import pandas as pd
 
+    from config import Settings
     from dictionary_models import WorkbookMetadata
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 SOURCE_PATH = PROJECT_DIR / "mock_data" / "quotes_nsi" / "quotes_nsi_argus_fc_exception.xlsb"
 
 
-def _selected_frame() -> tuple[pd.DataFrame, WorkbookMetadata]:
-    settings = load_settings()
+def _selected_frame(settings: Settings) -> tuple[pd.DataFrame, WorkbookMetadata]:
     frame, metadata = read_single_sheet_frame(SOURCE_PATH, timezone=settings.app_timezone)
     selected = select_columns_between(
         frame,
@@ -27,8 +26,8 @@ def _selected_frame() -> tuple[pd.DataFrame, WorkbookMetadata]:
     return selected.copy(), metadata
 
 
-def test_frame_origin_reports_real_sheet_and_column_letters() -> None:
-    frame, _ = read_single_sheet_frame(SOURCE_PATH, timezone=load_settings().app_timezone)
+def test_frame_origin_reports_real_sheet_and_column_letters(settings: Settings) -> None:
+    frame, _ = read_single_sheet_frame(SOURCE_PATH, timezone=settings.app_timezone)
 
     origin = frame_origin(frame)
 
@@ -38,8 +37,8 @@ def test_frame_origin_reports_real_sheet_and_column_letters() -> None:
     assert origin.column_letters["prod_version"] == "B"
 
 
-def test_required_error_keeps_sheet_name_and_original_cell() -> None:
-    frame, metadata = _selected_frame()
+def test_required_error_keeps_sheet_name_and_original_cell(settings: Settings) -> None:
+    frame, metadata = _selected_frame(settings)
     frame.loc[0, "source_code"] = None
 
     with pytest.raises(RequiredCellValueError) as error_info:
@@ -55,8 +54,8 @@ def test_required_error_keeps_sheet_name_and_original_cell() -> None:
     assert "quotes_nsi_argus_fc_exception.xlsb" in error_info.value.reason
 
 
-def test_unique_error_keeps_sheet_name_and_original_cells() -> None:
-    frame, metadata = _selected_frame()
+def test_unique_error_keeps_sheet_name_and_original_cells(settings: Settings) -> None:
+    frame, metadata = _selected_frame(settings)
     frame.loc[0, "prod_version"] = "same"
     frame.loc[1, "prod_version"] = "same"
 

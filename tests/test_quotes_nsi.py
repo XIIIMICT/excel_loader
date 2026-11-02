@@ -1,13 +1,16 @@
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pandas as pd
 import pytest
 
-from config import load_settings
 from dictionaries.quotes_nsi.sources import build_payload as build_sources_payload
 from dictionary_models import WorkbookMetadata
 from excel_parser import build_dictionary_payload
+
+if TYPE_CHECKING:
+    from config import Settings
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 
@@ -57,9 +60,9 @@ def test_boolean_conversion(value: object, nullable_mode: str, expected: object)
     assert payload.rows[0]["flag"] is expected
 
 
-def test_sources_are_normalized_and_have_database_constraints() -> None:
+def test_sources_are_normalized_and_have_database_constraints(settings: Settings) -> None:
     source_path = PROJECT_DIR / "mock_data" / "quotes_nsi" / "quotes_nsi_sources.xlsx"
-    payload = build_sources_payload(load_settings(), source_path)
+    payload = build_sources_payload(settings, source_path)
     columns = {column.name: column for column in payload.columns}
 
     assert payload.primary_key_columns == ("source_code",)

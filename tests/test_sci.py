@@ -1,20 +1,23 @@
 from datetime import date
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pandas as pd
 import pytest
 
 from business_errors import DuplicatePrimaryKeyError
-from config import load_settings
 from dictionaries.quotes import sci
+
+if TYPE_CHECKING:
+    from config import Settings
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 
 
-def test_blank_row_ends_the_data_block() -> None:
+def test_blank_row_ends_the_data_block(settings: Settings) -> None:
     source_path = PROJECT_DIR / "mock_data" / "quotes" / "SCI" / "SCI СКС_new.XLSX"
 
-    payload = sci.build_payload(load_settings(), (source_path,)).payload
+    payload = sci.build_payload(settings, (source_path,)).payload
 
     # Two real rows; the blank separator row and everything after it (a repeated
     # duplicate row and a total row) are not part of the report.
@@ -22,7 +25,7 @@ def test_blank_row_ends_the_data_block() -> None:
     assert [row["pub_date"] for row in payload.rows] == [date(2005, 5, 5), date(2007, 8, 1)]
 
 
-def test_duplicate_sci_primary_key_is_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_duplicate_sci_primary_key_is_an_error(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
     source_path = PROJECT_DIR / "mock_data" / "quotes" / "SCI" / "SCI СКС_new.XLSX"
     source_frame = pd.DataFrame(
         {
@@ -35,10 +38,10 @@ def test_duplicate_sci_primary_key_is_an_error(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(sci, "_read_source_frames", lambda _source_path: ([source_frame], []))
 
     with pytest.raises(DuplicatePrimaryKeyError):
-        sci.build_payload(load_settings(), (source_path,))
+        sci.build_payload(settings, (source_path,))
 
 
-def test_builds_sci_payload_with_required_columns(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_builds_sci_payload_with_required_columns(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
     source_path = PROJECT_DIR / "mock_data" / "quotes" / "SCI" / "SCI СКС_new.XLSX"
     source_frame = pd.DataFrame(
         {
@@ -50,7 +53,7 @@ def test_builds_sci_payload_with_required_columns(monkeypatch: pytest.MonkeyPatc
     )
     monkeypatch.setattr(sci, "_read_source_frames", lambda _source_path: ([source_frame], []))
 
-    result = sci.build_payload(load_settings(), (source_path,))
+    result = sci.build_payload(settings, (source_path,))
     payload = result.payload
     columns = {column.name: column for column in payload.columns}
 

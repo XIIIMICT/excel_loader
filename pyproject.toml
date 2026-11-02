@@ -9,7 +9,6 @@ dependencies = [
     "pandas>=3.1.0",
     "prometheus-client>=0.23",
     "pydantic>=2.14.2",
-    "pydantic-settings>=2.16.2",
     "python-calamine>=0.9.0",
     "pyxlsb>=1.0.10",
     "sqlalchemy[asyncio]>=2.1.6",
@@ -71,7 +70,7 @@ relative_files = true
 omit = ["src/scripts/*"]
 
 [tool.coverage.report]
-# A10: regression floor, not a target — kept at 40 so a future module does not
+# Regression floor, not a target — kept at 40 so a future module does not
 # fail the suite on arrival; add tests where behavior warrants them.
 fail_under = 40
 exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:"]

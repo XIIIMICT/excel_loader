@@ -1,15 +1,15 @@
 """
-Lock in the A2/A3 contracts from the November 2026 follow-up audit.
+Contract regressions for the source-resolver/loader seam.
 
-A3: ``SourceFileNotFoundError`` is a ``SourceError`` subclass (not a
+``SourceFileNotFoundError`` is a ``SourceError`` subclass (not a
 ``BusinessLoadError``) raised by ``_resolve_folder_source`` for a missing file,
 so the runner's WARNING+skip path is type-driven and never matches the
 Russian text ``"файл не найден"``.
 
-A2: every runner returns a ``ModuleOutcome`` carrying its own
+Every runner returns a ``ModuleOutcome`` carrying its own
 ``tables_to_grant`` / ``relation_references_to_grant``.
 
-A6: the per-row order of ``build_dictionary_payload`` is frozen —
+The per-row order of ``build_dictionary_payload`` is frozen —
 ``where`` filter → raw skip → convert → converted skip → primary-key duplicate.
 """
 

@@ -30,7 +30,7 @@ async def grant_usage_on_schema(
     """
     GRANT USAGE ON SCHEMA to the requested roles that exist in ``pg_roles``.
 
-    Single grants helper (audit A5): storage-level preparation and the
+    Single grants helper: storage-level preparation and the
     ``postgres.py`` post-action wrappers both go through it, so a change to
     the grant semantics lands in one place. Roles that do not exist are
     skipped (returned as ``skipped``) instead of failing the query.

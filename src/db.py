@@ -35,7 +35,7 @@ async def postgres_session(
     Creates one engine, yields it, and disposes it on both normal and
     exception paths. Every runner and post-action uses this instead of a
     hand-rolled ``engine = create_postgres_engine(...); try/finally: dispose``
-    so the cleanup path exists once (audit A4).
+    so the cleanup path exists once.
     """
     engine = create_postgres_engine(settings, database=database, isolation_level=isolation_level)
     try:

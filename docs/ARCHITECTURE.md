@@ -66,7 +66,7 @@ IMAP mode: `IMAP4_SSL`, `common.imap.*`, the last `scan_depth` messages are scan
 | `CombinedDictionaryLoader` | a fixed set of files → one table (parts accumulate) |
 | `PatternDictionaryLoader` | all folder files by pattern → one table |
 
-Value frames are read through the pandas-native calamine engine (`excel_parser.EXCEL_ENGINE`; `python-calamine` reads `.xlsx`/`.xlsb` with the same values as the previous openpyxl/pyxlsb engines, while the pyxlsb engine is deprecated in pandas). openpyxl stays for workbook metadata (`read_workbook_metadata`: properties for `.xlsx`, `docProps/core.xml` for `.xlsb`), for PD (fonts, `data_only=False`) and sales_op (`properties.modified`); the sales_op spec reads via the direct pyxlsb API — see docs/AUDIT.md, the calamine assessment.
+Value frames are read through the pandas-native calamine engine (`excel_parser.EXCEL_ENGINE`; `python-calamine` reads `.xlsx`/`.xlsb` with the same values as the previous openpyxl/pyxlsb engines — value parity was verified over `mock_data/`, and the pyxlsb engine is deprecated in pandas). openpyxl stays for PD (fonts, `data_only=False`) and sales_op values (`read_only=True, keep_links=False`); the sales_op spec reads via the direct pyxlsb API (python-calamine applies number-format conversions, e.g. dates→datetime, which could silently change the values the spec parser matches on, so neither `openpyxl` nor `pyxlsb` is removed from `pyproject.toml`). Workbook metadata comes from one shared `docProps/core.xml` reader (`excel_parser.read_core_properties` — the same zip part carries creator/lastModifiedBy and created/modified for every zip-based format): `read_workbook_metadata` no longer branches on suffix and sales_op derives `modified_at` from the helper instead of `properties.modified`.
 
 Each loader builds a `DictionaryPayload` via `build_dictionary_payload` (`excel_parser.py`): `table_reference`, `selected_frame`, `primary_key_columns`, `metadata` and optionally:
 
@@ -120,7 +120,7 @@ Errors and warnings must point at the real cell in the source workbook, not at a
 
 ## Source history
 
-`source_history.py`. One row per successfully loaded file in `el.excel_loader_sources_history`: `loaded_at`, `src_file`, `dest_table`, `file_modified_at`, `file_modifier`. `file_modifier` is the workbook's `lastModifiedBy`/`creator`; for `.xlsb` it is read from `docProps/core.xml`. The table is created/extended on every run; the retired `module` column is dropped. File metadata is not duplicated in the target tables.
+`source_history.py`. One row per successfully loaded file in `el.excel_loader_sources_history`: `loaded_at`, `src_file`, `dest_table`, `file_modified_at`, `file_modifier`. `file_modifier` is the workbook's `lastModifiedBy`/`creator`, read from `docProps/core.xml` (the same path for `.xlsx` and `.xlsb`); a missing timestamp falls back to the file mtime. The table is created/extended on every run; the retired `module` column is dropped. File metadata is not duplicated in the target tables.
 
 ## Post-actions, grants and materialized views
 

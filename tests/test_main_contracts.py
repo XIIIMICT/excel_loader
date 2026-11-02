@@ -1,12 +1,12 @@
 """
-The exit-code/outcome matrix of ``main._run_app`` — the CLI contract for one process run (audit A9).
+The exit-code/outcome matrix of ``main._run_app`` — the CLI contract for one process run.
 
 * module outcomes flow through the real ``_run_modules`` into ``ModuleRun``;
 * module errors, format changes, module post-action failures and common
   post-action failures exit with ``1``; warnings alone do not;
 * the pushed outcome string follows ``_module_run_outcome``:
   success / partial_success / failure;
-* CLI module selection (audit E2): repeated ``--module`` choices unioned with
+* CLI module selection: repeated ``--module`` choices unioned with
   the legacy per-module boolean flags, no selection → all modules.
 
 The database seams (``_run_post_actions``, ``_run_common_post_actions``, the
@@ -164,7 +164,7 @@ def test_run_app_common_post_action_failure_yields_exit_1(monkeypatch: pytest.Mo
 
 
 # --
-# CLI module selection (audit E2): repeated --module choices unioned with the
+# CLI module selection: repeated --module choices unioned with the
 # legacy per-module boolean flags; no explicit selection means all modules.
 
 

@@ -75,23 +75,32 @@ jobs:
             test-results.xml
           retention-days: 7
 
-  dependencies:
-    name: Dependency review
-    # CodeQL смотрит на код, который МЫ пишем; здесь проверяем то, что мы ТЯНЕМ.
-    # Оценивается только diff PR: неизвестные в main-ветке пакеты не блокируются.
-    if: github.event_name == 'pull_request'
+  dependency-review:
     runs-on: ubuntu-24.04
+    if: github.event_name == 'pull_request'
     timeout-minutes: 5
     permissions:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
       - uses: actions/dependency-review-action@v4
         with:
-          # Заблокировать PR, вносящий уязвимый пакет.
           fail-on-severity: moderate
-          comment-summary-in-pr: on-failure
+
+  dependency-review-gate:
+    runs-on: ubuntu-24.04
+    if: always()
+    needs: [dependency-review]
+    steps:
+      - name: Pass gate
+        if: ${{ !(github.event_name == 'pull_request' && needs.dependency-review.result == 'skipped') }}
+        run: exit 0
+      - name: Fail if dependency review did not pass on PR
+        if: ${{ github.event_name == 'pull_request' && needs.dependency-review.result != 'success' }}
+        run: |
+          echo "Dependency review result: ${{ needs.dependency-review.result }}"
+          exit 1
 
   secrets:
     name: Secret scan

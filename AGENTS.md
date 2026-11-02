@@ -7,7 +7,7 @@ Cheat sheet for agents. Read only the section you need; details — in `docs/*`.
 An Excel-to-PostgreSQL loader. A single CLI process (`src/main.py`) runs the selected modules, then module post-actions (grants, materialized-view refresh) and common post-actions. The loader sends no e-mail — alerts (incl. e-mail) are delivered by the monitoring stack (Alertmanager).
 
 - `quotes_nsi` — quotes reference data, `quotes` — quotes, `pd` — production summary, `sales_op` — per-client operational sales plans.
-- Python 3.14 + **uv**, SQLAlchemy/asyncpg, pandas/openpyxl/pyxlsb. Main code — `src/`.
+- Python 3.15+ **uv**, SQLAlchemy/asyncpg, pandas/openpyxl/pyxlsb. Main code — `src/`.
 - Runs in Compose; PostgreSQL and Loki are external services. Settings — `config.toml` (template `config.example.toml`).
 
 ## Commands
@@ -31,7 +31,7 @@ Default modules — all four. `--module <code>` (repeatable; codes: `quotes_nsi`
 ## Landmines (critical!)
 
 1. **`.gitignore` is deny-all with a whitelist.** A new root file or folder won't reach git until `!path` is added (`!/docs/` and `!/docs/**` already exist). Nested `.gitignore` files work the same way.
-2. **There is no `README.md`** — it was retired in November 2026 (audit A11): the entry point is this `AGENTS.md`, details live in `docs/*`. Don't create a new README without an explicit request; `.gitignore` no longer whitelists it.
+2. **There is no `README.md`** — it was retired in November 2026: the entry point is this `AGENTS.md`, details live in `docs/*`. Don't create a new README without an explicit request; `.gitignore` no longer whitelists it.
 3. **`quotes_nsi_frequencies` and `quotes_nsi_frequencies_rank` keep the source text verbatim**, including the empty string, `Null` and `-`. These are data, not SQL `NULL` markers; don't "clean" them with normal normalization (`preserve_text_values`).
 4. **Aliases in `build_dictionary_payload` are applied before all checks.** `primary_key_columns`, `not_null_columns`, `not_null_filtered_columns`, `unique_columns`, `column_kinds`, `where_columns` are expressed in **target** names. A missing source column or duplicated target names is an error.
 5. **Boolean text values:** after `strip().lower()` — `y`/`yes`/`да` → `true`, `n`/`no`/`нет` → `false`, the other text `false` → `false`, everything else → `true`. An empty required (NOT NULL) field → `false`, an empty nullable one → `NULL`.
@@ -49,7 +49,7 @@ Default modules — all four. `--module <code>` (repeatable; codes: `quotes_nsi`
 17. **Modules are a registry, not an `if module ==` chain.** `main._run_modules` dispatches over `_module_entries(settings)` (`ModuleEntry` = code + post-action config + runner). Runners return `ModuleOutcome` (`src/module_models.py`), carrying their own `tables_to_grant` / `relation_references_to_grant`. Adding module #5 = one line in `config.MODULE_CODES` + one `ModuleEntry` + one runner + a `[<code>]` TOML block; `_run_modules` itself is not edited. Per-module config lives in `settings.modules[code]` (`config.py` collects flat TOML blocks there) — no per-module properties on `Settings`.
 18. **The engine lifecycle has one owner.** Runners and post-actions never create/dispose engines by hand — use `async with postgres_session(settings) as engine` from `src/db.py` (it disposes on both success and error). `create_postgres_engine` stays the only engine factory.
 19. **Grants logic exists once.** Connection-level `storage.grant_usage_on_schema` / `grant_select_on_table` (role-filtered via `POSTGRES_ROLE_EXISTS_SQL`) are the single implementation; `postgres.py`'s `grant_*_to_existing_roles` are thin engine-level wrappers. Don't resurrect unfiltered/filtered copies.
-20. **Open any openpyxl workbook only through `excel_parser.load_openpyxl_workbook`** — it carries the only scoped suppression of openpyxl's "… extension is not supported and will be removed" warning. No module-level `filterwarnings` anywhere (the old sales_op import-time filter is gone). Per-module read modes stay: PD loads fully (`read_only=False`), sales_op opens `read_only=True, keep_links=False`. Dictionary **value** frames are a separate path: pandas' native calamine engine (`excel_parser.EXCEL_ENGINE`) reads all formats; pyxlsb remains only for the direct sales_op spec reader (`sales_op/specification.py`).
+20. **Open any openpyxl workbook only through `excel_parser.load_openpyxl_workbook`** — it carries the only scoped suppression of openpyxl's "… extension is not supported and will be removed" warning. No module-level `filterwarnings` anywhere (the old sales_op import-time filter is gone). Per-module read modes stay: PD loads fully (`read_only=False`), sales_op opens `read_only=True, keep_links=False`. Dictionary **value** frames are a separate path: pandas' native calamine engine (`excel_parser.EXCEL_ENGINE`) reads all formats; pyxlsb remains only for the direct sales_op spec reader (`sales_op/specification.py`). Workbook **metadata** has its own path: only `excel_parser.read_core_properties` (`docProps/core.xml` via zipfile+defusedxml) — it serves `.xlsx`/`.xlsm`/`.xlsb` alike, feeds `read_workbook_metadata` (`file_modifier`) and the sales_op `modified_at`; openpyxl's `properties.*` is not used for metadata, and a package without a user name raises `FileMetadataMissingError`.
 21. **The per-row order of `build_dictionary_payload` is frozen by tests** (`tests/test_audit_followup.py`): `where` filter → raw skip → convert → converted skip → primary-key duplicate. The body is split into `_validate_column_contract` + `_RowConverter`; refactors must keep both the order and the alias-before-checks rule (landmine 4).
 
 ## Working rules
@@ -67,6 +67,5 @@ Default modules — all four. `--module <code>` (repeatable; codes: `quotes_nsi`
 - `docs/PD.md` — `pd`: schema, parsing, `value_double`, `pd_view` and fallback, deferred packages.
 - `docs/SALES_OP.md` — `sales_op`: specification, file classification, normalization, `sales_op_raw_view`.
 - `docs/WORKFLOW.md` — environment, quality, prek, tests, languages, commits and branching.
-- `docs/AUDIT.md` — the November 2026 reanimation audit (findings + roadmap), the November 2026 follow-up (extensibility, calamine assessment, P1 implementation log).
 
 **When behavior changes, update the relevant file in `docs/` — that's a requirement, not a wish.**

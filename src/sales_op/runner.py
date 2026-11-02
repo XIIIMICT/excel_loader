@@ -7,7 +7,7 @@ from db import postgres_session
 from dictionary_models import SourceHistoryEntry
 from module_models import ModuleOutcome
 from postgres import inspect_storage, replace_table_rows
-from sales_op.db import create_sales_op_view, drop_sales_op_view
+from sales_op.db import create_sales_op_view
 from sales_op.excel_parser import inspect_sales_op_workbook, parse_sales_op_workbook
 from sales_op.models import (
     SalesOpError,
@@ -65,7 +65,6 @@ async def run_sales_op(settings: Settings) -> ModuleOutcome:
         return _sales_op_outcome(has_errors=True, loaded_tables=(), view_reference=None, has_warnings=False)
 
     async with postgres_session(settings) as engine:
-        await drop_sales_op_view(settings, engine=engine)
         loaded_tables, storage_failures = await _replace_tables(
             settings,
             engine=engine,

@@ -167,7 +167,7 @@ def _resolve_folder_sources_by_pattern(
     source_files = tuple(
         SourceFile(path=path, display_name=str(path), original_name=path.name)
         for path in sorted(candidates, key=lambda item: str(item).casefold())
-        if path.is_file() and pattern.fullmatch(path.name)
+        if path.is_file() and pattern.fullmatch(path.name) and not _is_excel_owner_file(path.name)
     )
     if not source_files and not allow_empty:
         msg = f"в папке {data_dir} не найдено файлов по шаблону {file_pattern!r}"
@@ -293,6 +293,8 @@ def _matching_attachments(message: EmailMessage | Message, pattern: re.Pattern[s
         decoded_file_name = _decode_header_text(file_name)
         if not pattern.fullmatch(decoded_file_name):
             continue
+        if _is_excel_owner_file(decoded_file_name):
+            continue
 
         content = part.get_payload(decode=True)
         if isinstance(content, bytes):
@@ -302,6 +304,14 @@ def _matching_attachments(message: EmailMessage | Message, pattern: re.Pattern[s
 
 def _exact_file_pattern(pattern_or_path: PatternOrPath) -> str:
     return re.escape(Path(pattern_or_path).name)
+
+
+def _is_excel_owner_file(file_name: str) -> bool:
+    # Excel writes a ``~$<original>`` owner/lock file next to a workbook while
+    # it is open. The file is a tiny non-OOXML stub, so reading it as xlsx
+    # raises ``BadZipFile``; every enumeration path skips it regardless of the
+    # configured file pattern so an open workbook never looks like a source.
+    return file_name.startswith("~$")
 
 
 def _compile_file_pattern(file_pattern: str) -> re.Pattern[str]:

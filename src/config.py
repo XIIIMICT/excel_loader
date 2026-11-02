@@ -308,11 +308,23 @@ def load_settings() -> Settings:
 
 
 def _apply_env_overrides(settings: Settings) -> Settings:
+    # ``POSTGRES_HOST`` and ``POSTGRES_USER`` override the matching
+    # ``[common.postgres]`` fields so the same image runs against different
+    # deployments without editing ``config.toml``. The user override also feeds
+    # ``assign_object_owner.sql`` (via ``settings.postgres_user``), keeping the
+    # source-owner the post-action reassigns from in sync with the connection
+    # role.
     postgres_host = _strip_optional(environ.get("POSTGRES_HOST"))
-    if postgres_host is None:
+    postgres_user = _strip_optional(environ.get("POSTGRES_USER"))
+    if postgres_host is None and postgres_user is None:
         return settings
 
-    postgres = settings.common.postgres.model_copy(update={"host": postgres_host})
+    postgres_updates: dict[str, object] = {}
+    if postgres_host is not None:
+        postgres_updates["host"] = postgres_host
+    if postgres_user is not None:
+        postgres_updates["user"] = postgres_user
+    postgres = settings.common.postgres.model_copy(update=postgres_updates)
     common = settings.common.model_copy(update={"postgres": postgres})
     return settings.model_copy(update={"common": common})
 

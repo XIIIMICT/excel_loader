@@ -20,12 +20,6 @@ def _quoted_reference(settings: Settings, name: str) -> str:
     return f"{quote_identifier(settings.modules['sales_op'].schema_name)}.{quote_identifier(name)}"
 
 
-async def drop_sales_op_view(settings: Settings, *, engine: AsyncEngine) -> None:
-    view_reference = _quoted_reference(settings, VIEW_NAME)
-    async with engine.begin() as connection:
-        await connection.execute(text(f"DROP VIEW IF EXISTS {view_reference}"))
-
-
 async def create_sales_op_view(
     settings: Settings,
     *,
@@ -40,7 +34,7 @@ async def create_sales_op_view(
     view_reference = _quoted_reference(settings, VIEW_NAME)
     selects = [_source_select(settings, specification, source_code=source_code) for source_code in available_sources]
     async with engine.begin() as connection:
-        await connection.execute(text(f"CREATE VIEW {view_reference} AS\n" + "\nUNION ALL\n".join(selects)))
+        await connection.execute(text(f"CREATE OR REPLACE VIEW {view_reference} AS\n" + "\nUNION ALL\n".join(selects)))
         for column in specification.columns:
             comment = specification.descriptions[column.name]
             await connection.execute(

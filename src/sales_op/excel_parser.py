@@ -3,7 +3,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING
-from warnings import catch_warnings, simplefilter
+from warnings import catch_warnings, filterwarnings
 
 from openpyxl.utils import get_column_letter
 from openpyxl.utils.datetime import from_excel
@@ -12,6 +12,7 @@ from app_logging import get_logger
 from business_errors import CellTypeConversionError, FileMetadataMissingError
 from excel_parser import (
     EXCEL_ERROR_VALUES,
+    OPENPYXL_EXTENSION_WARNING,
     convert_excel_value,
     load_openpyxl_workbook,
     read_core_properties,
@@ -50,15 +51,15 @@ def inspect_sales_op_workbook(
 ) -> tuple[date, datetime, WorkbookMetadata]:
     with _workbook_warnings_suppressed():
         workbook = _load_workbook(source_path)
-    try:
-        worksheet = _first_visible_sheet(workbook)
-        marker_row, marker_column = _find_plan_marker(worksheet)
-        plan_date = _parse_plan_date(worksheet.cell(marker_row, marker_column + 1).value)
-        metadata = read_workbook_metadata(source_path, timezone=timezone)
-        modified_at = _workbook_modified_at(source_path, metadata)
-        return plan_date, modified_at, metadata
-    finally:
-        workbook.close()
+        try:
+            worksheet = _first_visible_sheet(workbook)
+            marker_row, marker_column = _find_plan_marker(worksheet)
+            plan_date = _parse_plan_date(worksheet.cell(marker_row, marker_column + 1).value)
+            metadata = read_workbook_metadata(source_path, timezone=timezone)
+            modified_at = _workbook_modified_at(source_path, metadata)
+            return plan_date, modified_at, metadata
+        finally:
+            workbook.close()
 
 
 def parse_sales_op_workbook(
@@ -69,59 +70,59 @@ def parse_sales_op_workbook(
 ) -> ParsedSalesOpFile:
     with _workbook_warnings_suppressed():
         workbook = _load_workbook(source_path)
-    try:
-        worksheet = _first_visible_sheet(workbook)
-        marker_row, marker_column = _find_plan_marker(worksheet)
-        plan_date = _parse_plan_date(worksheet.cell(marker_row, marker_column + 1).value)
-        workbook_metadata = metadata or read_workbook_metadata(source_path, timezone=UTC)
-        modified_at = _workbook_modified_at(source_path, workbook_metadata)
-        header_row = marker_row + 1
-        headers = tuple(cell.value for cell in next(worksheet.iter_rows(min_row=header_row, max_row=header_row)))
-        first_column, last_column = _find_header_bounds(headers)
-        bound_columns, missing_headers = _bind_source_columns(
-            source_specification.mappings,
-            headers=tuple(headers[first_column : last_column + 1]),
-            first_column=first_column,
-        )
-        if missing_headers:
-            message = f"в файле {source_path} отсутствуют обязательные столбцы из спецификации: " + ", ".join(
-                repr(header) for header in missing_headers
-            )
-            raise sales_op_error(message)
-
-        rows: list[DbRow] = []
-        warning_count = 0
-        for row_number, raw_row in enumerate(
-            worksheet.iter_rows(min_row=header_row + 1, values_only=True),
-            start=header_row + 1,
-        ):
-            prepared_row, row_warning_count = _prepare_row(
-                raw_row,
-                row_number=row_number,
-                context=_RowContext(source_specification.mappings, bound_columns, plan_date, str(source_path)),
-            )
-            warning_count += row_warning_count
-            if prepared_row.get(PRODUCER_TARGET) is None or prepared_row.get(SELLER_TARGET) is None:
-                # A row without a producer or seller is not a plan row; the
-                # "Not Nullable" check applies only to the rows we keep.
-                continue
-            _require_not_nullable(
-                prepared_row,
+        try:
+            worksheet = _first_visible_sheet(workbook)
+            marker_row, marker_column = _find_plan_marker(worksheet)
+            plan_date = _parse_plan_date(worksheet.cell(marker_row, marker_column + 1).value)
+            workbook_metadata = metadata or read_workbook_metadata(source_path, timezone=UTC)
+            modified_at = _workbook_modified_at(source_path, workbook_metadata)
+            header_row = marker_row + 1
+            headers = tuple(cell.value for cell in next(worksheet.iter_rows(min_row=header_row, max_row=header_row)))
+            first_column, last_column = _find_header_bounds(headers)
+            bound_columns, missing_headers = _bind_source_columns(
                 source_specification.mappings,
-                row_number=row_number,
-                source_name=str(source_path),
+                headers=tuple(headers[first_column : last_column + 1]),
+                first_column=first_column,
             )
-            rows.append(prepared_row)
+            if missing_headers:
+                message = f"в файле {source_path} отсутствуют обязательные столбцы из спецификации: " + ", ".join(
+                    repr(header) for header in missing_headers
+                )
+                raise sales_op_error(message)
 
-        return ParsedSalesOpFile(
-            plan_date=plan_date,
-            modified_at=modified_at,
-            sheet_name=worksheet.title,
-            rows=rows,
-            warning_count=warning_count,
-        )
-    finally:
-        workbook.close()
+            rows: list[DbRow] = []
+            warning_count = 0
+            producer_index = bound_columns.get(PRODUCER_TARGET)
+            seller_index = bound_columns.get(SELLER_TARGET)
+            for row_number, raw_row in enumerate(
+                worksheet.iter_rows(min_row=header_row + 1, values_only=True),
+                start=header_row + 1,
+            ):
+                if _is_non_plan_row(raw_row, producer_index=producer_index, seller_index=seller_index):
+                    continue
+                prepared_row, row_warning_count = _prepare_row(
+                    raw_row,
+                    row_number=row_number,
+                    context=_RowContext(source_specification.mappings, bound_columns, plan_date, str(source_path)),
+                )
+                warning_count += row_warning_count
+                _require_not_nullable(
+                    prepared_row,
+                    source_specification.mappings,
+                    row_number=row_number,
+                    source_name=str(source_path),
+                )
+                rows.append(prepared_row)
+
+            return ParsedSalesOpFile(
+                plan_date=plan_date,
+                modified_at=modified_at,
+                sheet_name=worksheet.title,
+                rows=rows,
+                warning_count=warning_count,
+            )
+        finally:
+            workbook.close()
 
 
 def _load_workbook(source_path: Path) -> Workbook:
@@ -233,6 +234,32 @@ def _bind_source_columns(
     return bound_columns, tuple(missing_headers)
 
 
+def _is_non_plan_row(
+    raw_row: tuple[object, ...],
+    *,
+    producer_index: int | None,
+    seller_index: int | None,
+) -> bool:
+    return _is_blank_cell(_cell_at(raw_row, producer_index)) or _is_blank_cell(_cell_at(raw_row, seller_index))
+
+
+def _cell_at(raw_row: tuple[object, ...], index: int | None) -> object | None:
+    if index is None or index >= len(raw_row):
+        return None
+    return raw_row[index]
+
+
+def _is_blank_cell(value: object) -> bool:
+    # Mirrors conditions when convert_excel_value returns NULL:
+    # None, empty string, single "-", or Excel error literal.
+    if value is None:
+        return True
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped in {"", "-"} or stripped.upper() in EXCEL_ERROR_VALUES
+    return False
+
+
 def _prepare_row(
     raw_row: tuple[object, ...],
     *,
@@ -289,6 +316,20 @@ class _RowContext:
 
 @contextmanager
 def _workbook_warnings_suppressed() -> Generator[None]:
+    # ``load_openpyxl_workbook`` filters this warning during ``load_workbook``,
+    # but a ``read_only=True`` workbook parses its sheet lazily: the
+    # ``"Unknown extension … will be removed"`` warning fires from
+    # ``openpyxl.worksheet._reader`` during ``iter_rows``/cell access, after
+    # ``load_openpyxl_workbook`` has returned. This context wraps the whole
+    # workbook lifecycle so the lazy-read warnings stay covered.
+    #
+    # Narrow on message+category+module: a blanket ``simplefilter("ignore",
+    # UserWarning)`` would also mask genuine conversion warnings.
     with catch_warnings():
-        simplefilter("ignore", UserWarning)
+        filterwarnings(
+            "ignore",
+            message=OPENPYXL_EXTENSION_WARNING,
+            category=UserWarning,
+            module=r"openpyxl\.worksheet\._reader",
+        )
         yield

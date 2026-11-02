@@ -151,6 +151,7 @@ async def _run_common_post_actions(settings: Settings, *, outcome: str) -> bool:
         for action in selected_actions:
             try:
                 sql = await asyncio.to_thread(action.path.read_text, encoding="utf-8")
+                sql = _render_post_action_sql(sql, settings=settings)
                 async with engine.begin() as connection:
                     await connection.exec_driver_sql(sql)
             except Exception:
@@ -159,6 +160,24 @@ async def _run_common_post_actions(settings: Settings, *, outcome: str) -> bool:
                 continue
             LOGGER.info("Общее пост-действие %s выполнено для состояния %s.", action.path, outcome)
     return has_errors
+
+
+SOURCE_OWNER_PLACEHOLDER = "__SOURCE_OWNER__"
+
+
+def _render_post_action_sql(sql: str, *, settings: Settings) -> str:
+    # The single templated value today is the PostgreSQL role the loader
+    # connects as (``common.postgres.user`` / ``POSTGRES_USER``): the owner
+    # whose objects ``assign_object_owner.sql`` reassigns to ``object_owner``.
+    # Bound parameters cannot cross a ``DO $$ ... $$`` body, so the value is
+    # injected here as an escaped string literal. A post-action without the
+    # placeholder is returned unchanged.
+    return sql.replace(SOURCE_OWNER_PLACEHOLDER, _sql_string_literal(settings.postgres_user))
+
+
+def _sql_string_literal(value: str) -> str:
+    # PostgreSQL string literal: wrap in single quotes, double internal quotes.
+    return "'" + value.replace("'", "''") + "'"
 
 
 def _module_entries(settings: Settings) -> tuple[ModuleEntry, ...]:

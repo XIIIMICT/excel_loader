@@ -1,4 +1,9 @@
-"""Config-model tests: validators, qualified-name normalization, `load_settings` error paths, POSTGRES_HOST override."""
+"""
+Config-model tests.
+
+Validators, qualified-name normalization, ``load_settings`` error paths and the
+POSTGRES_HOST / POSTGRES_USER env overrides.
+"""
 
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -278,3 +283,20 @@ def test_load_settings_applies_postgres_host_override(
     settings = config.load_settings()
 
     assert settings.postgres.host == "db.override.corp"
+
+
+def test_load_settings_applies_postgres_user_override(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # POSTGRES_USER overrides [common.postgres].user and feeds the
+    # assign_object_owner post-action via settings.postgres_user.
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(_settings_toml(), encoding="utf-8")
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    monkeypatch.setenv("POSTGRES_USER", "loader_role")
+
+    settings = config.load_settings()
+
+    assert settings.postgres.user == "loader_role"
+    assert settings.postgres_user == "loader_role"

@@ -41,7 +41,7 @@ def build_payload(settings: Settings, source_paths: tuple[Path, ...]) -> Combine
 
     combined_frame = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=SOURCE_COLUMNS)
     payload = build_dictionary_payload(
-        table_reference=settings.quotes_table_schema_reference(TABLE_NAME),
+        table_reference=settings.modules["quotes"].table_reference(TABLE_NAME),
         selected_frame=combined_frame,
         primary_key_columns=PRIMARY_KEY_COLUMNS,
         not_null_columns=("avg_price",),

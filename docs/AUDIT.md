@@ -116,8 +116,9 @@ at a blank row, deferred packages — these are documented landmines.
 ### P3 — supporting items
 
 - **A8. Settings surface.** `config.Settings` keeps ~25 one-line delegating
-  properties. A2 removes half; the rest may become `ModuleConfig` methods.
-  Optional.
+  properties. A2 removes half; the per-module rest landed with E3
+  (November 2026) — see its entry below. Common-config delegates stay by
+  design.
 - **A9. Outcome-matrix tests.** `main._run_app` exit-code matrix (all
   success / partial / post-action failure / common post-action failure) has
   no direct test; ~6 cases carry the whole CLI contract.
@@ -179,9 +180,12 @@ see A8/E3.
 `ModuleConfig` fields; `_validate_imap_settings` and the CLI override code
 enumerate them again. A `modules: dict[str, ModuleConfig]` (ordered, validated)
 would let a new module be a TOML block + one line, with no Python edits. This
-is the A8 "settings surface" item made concrete: it is optional today, but it
-is the real blocker for "add module #5 without touching shared internals".
-Out of scope for this pass; flagged for the next refactor round.
+is the A8 "settings surface" item made concrete.
+**Done (November 2026):** `Settings` keeps `common` and `modules` only — a
+`mode="before"` validator collects the flat TOML module blocks into
+`modules`, `_validate_imap_settings` enumerates the dict, per-module code
+reads `settings.modules[code]`, and the required codes are declared once as
+`config.MODULE_CODES`. See the second-pass implementation log.
 
 ### E4. `sales_op` installs a process-wide warning filter at import time
 
@@ -436,4 +440,37 @@ accompanies the archive.
   removed from `pyproject.toml`; the pandas exposure to the deprecated pyxlsb
   engine is gone.
 
-Items **not** done in this pass: A8 (settings-surface trims), E1–E3, E6.
+Items **not** done in this pass (closed later — see the second-pass log
+below): A8, E1–E3, E6.
+
+## Second-pass implementation log (November 2026)
+
+- **E2 — the CLI selects modules from one declared code list.**
+  `config.MODULE_CODES` (`("quotes_nsi", "quotes", "pd", "sales_op")`) is the
+  single source of module codes: `main.py` imports it for the `--module`
+  argparse choices and `_selected_modules` (repeated `--module` choices
+  unioned with the legacy `--quotes-nsi` / `--quotes` / `--pd` /
+  `--sales-op` flags, deduplicated in order of appearance; no explicit
+  selection → all modules), and `Settings.validate_modules` uses it to keep
+  the configuration complete. `--source` overrides are applied in one generic
+  loop, no longer four copy-pasted branches. Legacy flags stay for existing
+  scripts; contract tests in `tests/test_main_contracts.py`.
+
+- **E3 + A8 — `Settings.modules: dict[str, ModuleConfig]`, settings-surface
+  trim.**
+  `Settings` keeps `[common]` and `modules` only. A `mode="before"`
+  model-validator collects every non-`common` top-level TOML block into
+  `modules`, so the flat `config.example.toml` layout is unchanged and a
+  direct `modules = {...}` value also validates; mixing both raises one
+  `extra_forbidden` error instead of a silent overwrite. `validate_modules`
+  requires all `config.MODULE_CODES` to be present, so a partial config fails
+  with one readable message ("Конфигурация не содержит модулей: …") instead
+  of a runtime `KeyError` in the registry. `_validate_imap_settings`
+  enumerates `settings.modules`. The per-module settings surface moves to
+  `ModuleBaseConfig` and is read through the dict: `schema_name`,
+  `materialized_views` (`mviews_to_refresh` with bare names qualified by the
+  module schema), `table_reference(table_name)` and `users_to_grant`; the 12
+  one-line per-module properties, the four `*_table_schema_reference`
+  methods and the identity `pd_table_name` are gone. Loaders, runner, DB
+  and `seed.py` read `settings.modules[code]`. Common-config delegates
+  (`postgres`, `imap`, `table_schema`, `logs_dir`, …) stay by design.

@@ -32,12 +32,13 @@ class PdTables:
 
 
 def build_pd_tables(settings: Settings) -> PdTables:
-    metadata = MetaData(schema=settings.pd_schema)
-    assets_table_name = settings.pd_table_name("ref_assets")
-    materials_table_name = settings.pd_table_name("ref_materials")
-    indicators_table_name = settings.pd_table_name("ref_indicators")
-    data_table_name = settings.pd_table_name("pd_data")
-    change_log_table_name = settings.pd_table_name("pd_reference_change_log")
+    schema = settings.modules["pd"].schema_name
+    metadata = MetaData(schema=schema)
+    assets_table_name = "ref_assets"
+    materials_table_name = "ref_materials"
+    indicators_table_name = "ref_indicators"
+    data_table_name = "pd_data"
+    change_log_table_name = "pd_reference_change_log"
 
     assets = Table(
         assets_table_name,
@@ -73,7 +74,7 @@ def build_pd_tables(settings: Settings) -> PdTables:
         ),
         Column("product_grade", Text, nullable=True, comment="Марка товара. По умолчанию NULL, заполняется вручную."),
         PrimaryKeyConstraint("id"),
-        ForeignKeyConstraint(("parent_id",), (f"{settings.pd_schema}.{materials_table_name}.id",)),
+        ForeignKeyConstraint(("parent_id",), (f"{schema}.{materials_table_name}.id",)),
         UniqueConstraint("name", "parent_id"),
         comment=(
             "Глобальный справочник сырьевых позиций и групп. Иерархия хранится здесь; "
@@ -121,9 +122,9 @@ def build_pd_tables(settings: Settings) -> PdTables:
         Column("value_double", Float, nullable=True, comment="Числовая интерпретация value для аналитических view."),
         Column("loaded_at", TIMESTAMP(timezone=True), nullable=False, comment="Дата и время загрузки файла."),
         PrimaryKeyConstraint("loaded_for", "ordinal_number", "indicator_id"),
-        ForeignKeyConstraint(("asset_id",), (f"{settings.pd_schema}.{assets_table_name}.id",)),
-        ForeignKeyConstraint(("material_id",), (f"{settings.pd_schema}.{materials_table_name}.id",)),
-        ForeignKeyConstraint(("indicator_id",), (f"{settings.pd_schema}.{indicators_table_name}.id",)),
+        ForeignKeyConstraint(("asset_id",), (f"{schema}.{assets_table_name}.id",)),
+        ForeignKeyConstraint(("material_id",), (f"{schema}.{materials_table_name}.id",)),
+        ForeignKeyConstraint(("indicator_id",), (f"{schema}.{indicators_table_name}.id",)),
         comment="Факты производственной сводки в длинной форме: дата, строка, показатель, значение.",
     )
 
@@ -153,4 +154,4 @@ def build_pd_tables(settings: Settings) -> PdTables:
 
 
 def pd_view_reference(settings: Settings) -> str:
-    return f"{settings.pd_schema}.{settings.pd_table_name('pd_view')}"
+    return settings.modules["pd"].table_reference("pd_view")

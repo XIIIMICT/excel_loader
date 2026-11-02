@@ -7,8 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 import config
-
-MODULE_CODES = ("quotes_nsi", "quotes", "pd", "sales_op")
+from config import MODULE_CODES
 
 
 def _module(schema: str, *, data_dir: str = "data") -> dict[str, object]:
@@ -129,11 +128,46 @@ def test_common_directory_paths_resolve_relative_to_project_dir() -> None:
 def test_settings_schema_table_reference_helpers() -> None:
     settings = _minimal_settings()
 
-    assert settings.quotes_nsi_table_schema_reference("t1") == "raw.t1"
-    assert settings.quotes_table_schema_reference("t1") == "raw.t1"
-    assert settings.pd_table_name("pd_data") == "pd_data"
-    assert settings.pd_table_schema_reference("pd_data") == "pd.pd_data"
-    assert settings.sales_op_table_schema_reference("sales_op") == "raw.sales_op"
+    assert settings.modules["quotes_nsi"].table_reference("t1") == "raw.t1"
+    assert settings.modules["quotes"].table_reference("t1") == "raw.t1"
+    assert settings.modules["pd"].table_reference("pd_data") == "pd.pd_data"
+    assert settings.modules["sales_op"].table_reference("sales_op") == "raw.sales_op"
+
+
+def test_settings_collects_flat_module_blocks_into_modules() -> None:
+    settings = _minimal_settings()
+
+    assert tuple(settings.modules) == MODULE_CODES
+    assert settings.modules["pd"].schema_name == "pd"
+
+
+def test_settings_accepts_direct_modules_mapping() -> None:
+    data = {
+        "common": {"timezone": "UTC"},
+        "modules": {code: _module("raw") for code in MODULE_CODES},
+    }
+
+    settings = config.Settings.model_validate(data)
+
+    assert tuple(settings.modules) == MODULE_CODES
+    assert settings.modules["quotes_nsi"].schema_name == "raw"
+
+
+def test_settings_rejects_module_blocks_alongside_modules() -> None:
+    data = {"modules": {code: _module("raw") for code in MODULE_CODES}, "quotes": _module("raw")}
+
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        config.Settings.model_validate(data)
+
+
+def test_imap_validation_walks_modules() -> None:
+    data = _settings_data()
+    data["quotes"] = _module("raw")
+    data["quotes"]["sources"] = {"data_dir": "data", "source": "imap"}
+    data["common"] = {}
+
+    with pytest.raises(ValueError, match=r"Для IMAP-источника нужно заполнить"):
+        config.Settings.model_validate(data)
 
 
 def test_settings_app_timezone_follows_common_timezone() -> None:
@@ -193,7 +227,7 @@ def test_load_settings_invalid_toml_raises_value_error(monkeypatch: pytest.Monke
         config.load_settings()
 
 
-def test_load_settings_missing_required_section_raises_value_error(
+def test_load_settings_missing_required_module_raises_value_error(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -201,7 +235,7 @@ def test_load_settings_missing_required_section_raises_value_error(
     config_path.write_text("[quotes_nsi]\nschema = 'raw'\n[quotes_nsi.sources]\ndata_dir = 'data'\n", encoding="utf-8")
     monkeypatch.setattr(config, "CONFIG_PATH", config_path)
 
-    with pytest.raises(ValueError, match="не заполнена обязательная настройка"):
+    with pytest.raises(ValueError, match="Конфигурация не содержит модулей"):
         config.load_settings()
 
 
@@ -228,7 +262,7 @@ def test_load_settings_resolves_valid_config(
 
     settings = config.load_settings()
 
-    assert settings.quotes_nsi.sources.data_dir == config.PROJECT_DIR / "data"
+    assert settings.modules["quotes_nsi"].sources.data_dir == config.PROJECT_DIR / "data"
     assert settings.postgres.host == "localhost"
 
 

@@ -35,8 +35,9 @@ class PdLoadAttempt:
 
 
 async def run_pd(settings: Settings) -> ModuleOutcome:
+    module = settings.modules["pd"]
     async with postgres_session(settings) as engine:
-        history_table = await prepare_source_history(engine, users_to_grant=settings.pd_grant_select_users)
+        history_table = await prepare_source_history(engine, users_to_grant=module.users_to_grant)
         unloaded_result = await _process_unloaded_reports(settings, engine, history_table=history_table)
         has_errors = not unloaded_result.success
         has_format_changes = unloaded_result.has_format_changes
@@ -46,8 +47,8 @@ async def run_pd(settings: Settings) -> ModuleOutcome:
         try:
             with resolve_pattern_sources(
                 settings,
-                source_config=settings.pd.sources,
-                data_dir=settings.pd.sources.data_dir,
+                source_config=module.sources,
+                data_dir=module.sources.data_dir,
                 default_file_pattern=DEFAULT_PD_FILE_PATTERN,
             ) as source_files:
                 LOGGER.info("PD: найдено файлов по шаблону: %s.", len(source_files))
@@ -196,7 +197,7 @@ def _source_history_entry(settings: Settings, report: ParsedReport) -> SourceHis
     return SourceHistoryEntry(
         loaded_at=report.loaded_at,
         src_file=report.history_reference,
-        dest_table=settings.pd_table_schema_reference("pd_data"),
+        dest_table=settings.modules["pd"].table_reference("pd_data"),
         file_modified_at=report.file_modified_at,
         file_modifier=report.file_modifier,
     )

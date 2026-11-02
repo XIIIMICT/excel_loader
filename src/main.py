@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from app_logging import configure_logging, get_logger, reset_log_module, set_log_module
-from config import Settings, load_settings
+from config import MODULE_CODES, Settings, load_settings
 from db import postgres_session
 from dictionaries.quotes_nsi_registry import DICTIONARIES as QUOTES_NSI_DICTIONARIES
 from dictionaries.quotes_registry import COMBINED_DICTIONARIES as QUOTES_COMBINED_DICTIONARIES
@@ -35,8 +35,6 @@ if TYPE_CHECKING:
 LOGGER = get_logger("main")
 
 type ModuleRunner = Callable[[Settings], Awaitable[ModuleOutcome]]
-
-MODULE_CODES = ("quotes_nsi", "quotes", "pd", "sales_op")
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,30 +172,30 @@ def _module_entries(settings: Settings) -> tuple[ModuleEntry, ...]:
     return (
         ModuleEntry(
             code="quotes_nsi",
-            schema_name=settings.quotes_nsi_schema,
-            materialized_views=settings.quotes_nsi_materialized_views,
-            grant_users=settings.quotes_nsi_grant_select_users,
+            schema_name=settings.modules["quotes_nsi"].schema_name,
+            materialized_views=settings.modules["quotes_nsi"].materialized_views,
+            grant_users=settings.modules["quotes_nsi"].users_to_grant,
             runner=_run_quotes_nsi,
         ),
         ModuleEntry(
             code="quotes",
-            schema_name=settings.quotes_schema,
-            materialized_views=settings.quotes_materialized_views,
-            grant_users=settings.quotes_grant_select_users,
+            schema_name=settings.modules["quotes"].schema_name,
+            materialized_views=settings.modules["quotes"].materialized_views,
+            grant_users=settings.modules["quotes"].users_to_grant,
             runner=_run_quotes,
         ),
         ModuleEntry(
             code="pd",
-            schema_name=settings.pd_schema,
-            materialized_views=settings.pd_materialized_views,
-            grant_users=settings.pd_grant_select_users,
+            schema_name=settings.modules["pd"].schema_name,
+            materialized_views=settings.modules["pd"].materialized_views,
+            grant_users=settings.modules["pd"].users_to_grant,
             runner=run_pd,
         ),
         ModuleEntry(
             code="sales_op",
-            schema_name=settings.sales_op_schema,
-            materialized_views=settings.sales_op_materialized_views,
-            grant_users=settings.sales_op_grant_select_users,
+            schema_name=settings.modules["sales_op"].schema_name,
+            materialized_views=settings.modules["sales_op"].materialized_views,
+            grant_users=settings.modules["sales_op"].users_to_grant,
             runner=run_sales_op,
         ),
     )
@@ -235,7 +233,7 @@ async def _run_quotes_nsi(settings: Settings) -> ModuleOutcome:
     return await run_dictionaries(
         settings,
         module_label="НСИ котировок",
-        module_config=settings.quotes_nsi,
+        module_config=settings.modules["quotes_nsi"],
         dictionary_loaders=QUOTES_NSI_DICTIONARIES,
     )
 
@@ -244,7 +242,7 @@ async def _run_quotes(settings: Settings) -> ModuleOutcome:
     return await run_dictionaries(
         settings,
         module_label="Котировки",
-        module_config=settings.quotes,
+        module_config=settings.modules["quotes"],
         dictionary_loaders=QUOTES_DICTIONARIES,
         combined_loaders=QUOTES_COMBINED_DICTIONARIES,
         pattern_loaders=QUOTES_PATTERN_DICTIONARIES,
@@ -405,11 +403,15 @@ def _apply_cli_overrides(settings: Settings, *, args: argparse.Namespace) -> Set
     updates: dict[str, ModuleConfig] = {}
     if args.source is not None:
         for code in _selected_modules(args):
-            module = getattr(settings, code)
+            module = settings.modules[code]
             updates[code] = module.model_copy(
                 update={"sources": module.sources.model_copy(update={"source": args.source})},
             )
-    return settings.model_copy(update=updates) if updates else settings
+    if not updates:
+        return settings
+    modules = dict(settings.modules)
+    modules.update(updates)
+    return settings.model_copy(update={"modules": modules})
 
 
 def _build_parser() -> argparse.ArgumentParser:

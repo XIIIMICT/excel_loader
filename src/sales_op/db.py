@@ -15,8 +15,13 @@ if TYPE_CHECKING:
 VIEW_NAME = "sales_op_raw_view"
 
 
+def _quoted_reference(settings: Settings, name: str) -> str:
+    """Quoted `<schema>.<name>` reference; used for SQL DDL."""
+    return f"{quote_identifier(settings.modules['sales_op'].schema_name)}.{quote_identifier(name)}"
+
+
 async def drop_sales_op_view(settings: Settings, *, engine: AsyncEngine) -> None:
-    view_reference = f"{quote_identifier(settings.sales_op_schema)}.{quote_identifier(VIEW_NAME)}"
+    view_reference = _quoted_reference(settings, VIEW_NAME)
     async with engine.begin() as connection:
         await connection.execute(text(f"DROP VIEW IF EXISTS {view_reference}"))
 
@@ -32,7 +37,7 @@ async def create_sales_op_view(
         message = "нет таблиц sales_op для формирования представления"
         raise ValueError(message)
 
-    view_reference = f"{quote_identifier(settings.sales_op_schema)}.{quote_identifier(VIEW_NAME)}"
+    view_reference = _quoted_reference(settings, VIEW_NAME)
     selects = [_source_select(settings, specification, source_code=source_code) for source_code in available_sources]
     async with engine.begin() as connection:
         await connection.execute(text(f"CREATE VIEW {view_reference} AS\n" + "\nUNION ALL\n".join(selects)))
@@ -43,7 +48,7 @@ async def create_sales_op_view(
                     f"COMMENT ON COLUMN {view_reference}.{quote_identifier(column.name)} IS {_sql_literal(comment)}",
                 ),
             )
-    return f"{settings.sales_op_schema}.{VIEW_NAME}"
+    return settings.modules["sales_op"].table_reference(VIEW_NAME)
 
 
 async def _available_sources(
@@ -65,7 +70,10 @@ async def _available_sources(
                         )
                         """,
                     ),
-                    {"schema_name": settings.sales_op_schema, "table_name": source_table_name(source_code)},
+                    {
+                        "schema_name": settings.modules["sales_op"].schema_name,
+                        "table_name": source_table_name(source_code),
+                    },
                 ),
             )
             if exists:
@@ -75,7 +83,7 @@ async def _available_sources(
 
 def _source_select(settings: Settings, specification: SalesOpSpecification, *, source_code: str) -> str:
     source_specification = specification.sources[source_code]
-    table_reference = f"{quote_identifier(settings.sales_op_schema)}.{quote_identifier(source_table_name(source_code))}"
+    table_reference = _quoted_reference(settings, source_table_name(source_code))
     projection_items = [*(_mapping_expression(mapping) for mapping in source_specification.mappings)]
     projection = ",\n    ".join(projection_items)
     return f"SELECT\n    {projection}\nFROM {table_reference}"

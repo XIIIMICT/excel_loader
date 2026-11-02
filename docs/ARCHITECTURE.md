@@ -32,7 +32,7 @@ Exit code `0` only when no module has errors/format changes and no post-action f
 `config.py`. TOML, `extra="forbid"`: an unknown key is a validation error. Relative paths (`log_dir`, `unloaded_data_dir`, `mock_data_dir`, `data_dir`, post-action `path`) resolve against the project root. The file is read as `utf-8-sig` (BOM tolerated).
 
 - `[common]`: `log_dir`, `unloaded_data_dir`, `mock_data_dir`, `timezone` (empty/`null` → system), `[common.postgres]` (`host`/`port`/`user`/`password`/`db`/`schema`), `[common.imap]` (`host`/`port`/`user`/`password`/`mailbox`/`scan_depth`), `[[common.post_actions]]` (`path`, `run_on`).
-- Module blocks `[quotes_nsi]`, `[quotes]`, `[pd]`, `[sales_op]`: `schema`, `mviews_to_refresh`, `users_to_grant`, `[<module>.sources]`.
+- Module blocks `[quotes_nsi]`, `[quotes]`, `[pd]`, `[sales_op]`: `schema`, `mviews_to_refresh`, `users_to_grant`, `[<module>.sources]`. A `before`-validator collects every non-`common` top-level block into `Settings.modules: dict[str, ModuleConfig]` (a direct `modules = {...}` value stays as-is); the required codes are declared once in `config.MODULE_CODES`. Code reads per-module data via `settings.modules[code]` (`schema_name`, `materialized_views` — bare names qualified by the module schema — `users_to_grant`, `sources`).
 - `sources`: `data_dir` (required), `source = "local" | "imap"`, `file_pattern`, `imap_subject_pattern`. Regexes compile with `IGNORECASE`; their syntax is validated first.
 - `mviews_to_refresh` — names `name` or `schema.name`; without a schema the module's `schema` is prepended. Duplicates and more than two parts are errors.
 - External-service validation: if any module reads from IMAP, `common.imap.host/user/password` and that module's `imap_subject_pattern` are required.

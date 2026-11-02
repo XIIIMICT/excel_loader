@@ -15,6 +15,11 @@ PROJECT_DIR = SRC_DIR.parent
 CONFIG_PATH = PROJECT_DIR / "config.toml"
 MAX_QUALIFIED_NAME_PARTS = 2
 
+# The single declared module-code list: CLI `--module` choices, the module
+# registry in `main.py` and the required-`modules` validation all read it; a
+# new module is added here plus per-module glue (registry entry, TOML block).
+MODULE_CODES = ("quotes_nsi", "quotes", "pd", "sales_op")
+
 
 type PatternOrPath = str | Path
 type SourceMode = str
@@ -170,6 +175,15 @@ class ModuleBaseConfig(BaseModel):
     def validate_mviews(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         return _normalize_qualified_names(value, setting_name="mviews_to_refresh")
 
+    @property
+    def materialized_views(self) -> tuple[str, ...]:
+        """`mviews_to_refresh` with bare names qualified by this module's schema."""
+        return _with_default_schema(self.mviews_to_refresh, schema_name=self.schema_name)
+
+    def table_reference(self, table_name: str) -> str:
+        """Schema-qualified table name used by loaders, runners and seed."""
+        return f"{self.schema_name}.{table_name}"
+
 
 class ModuleConfig(ModuleBaseConfig):
     sources: SourcesConfig
@@ -179,10 +193,32 @@ class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     common: CommonConfig = Field(default_factory=CommonConfig)
-    quotes_nsi: ModuleConfig
-    quotes: ModuleConfig
-    pd: ModuleConfig
-    sales_op: ModuleConfig
+    modules: dict[str, ModuleConfig] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def collect_modules(cls, data: object) -> object:
+        """
+        Accept the flat TOML layout.
+
+        Every non-`common` top-level block is a module block (`[quotes_nsi]`,
+        …) and is collected into `modules`; a direct `modules = {...}` value is
+        left as-is (idempotent).
+        """
+        if not isinstance(data, Mapping) or "modules" in data:
+            return data
+        return {
+            "common": data.get("common", {}),
+            "modules": {code: value for code, value in data.items() if code != "common"},
+        }
+
+    @model_validator(mode="after")
+    def validate_modules(self) -> Self:
+        missing_codes = [code for code in MODULE_CODES if code not in self.modules]
+        if missing_codes:
+            msg = f"Конфигурация не содержит модулей: {', '.join(missing_codes)}."
+            raise ValueError(msg)
+        return self
 
     @model_validator(mode="after")
     def validate_external_services(self) -> Self:
@@ -241,69 +277,6 @@ class Settings(BaseModel):
     @property
     def table_schema(self) -> str:
         return self.postgres.schema_name
-
-    @property
-    def quotes_nsi_schema(self) -> str:
-        return self.quotes_nsi.schema_name
-
-    @property
-    def quotes_schema(self) -> str:
-        return self.quotes.schema_name
-
-    @property
-    def pd_schema(self) -> str:
-        return self.pd.schema_name
-
-    @property
-    def sales_op_schema(self) -> str:
-        return self.sales_op.schema_name
-
-    @property
-    def quotes_nsi_materialized_views(self) -> tuple[str, ...]:
-        return _with_default_schema(self.quotes_nsi.mviews_to_refresh, schema_name=self.quotes_nsi_schema)
-
-    @property
-    def quotes_nsi_grant_select_users(self) -> tuple[str, ...]:
-        return self.quotes_nsi.users_to_grant
-
-    @property
-    def quotes_materialized_views(self) -> tuple[str, ...]:
-        return _with_default_schema(self.quotes.mviews_to_refresh, schema_name=self.quotes_schema)
-
-    @property
-    def quotes_grant_select_users(self) -> tuple[str, ...]:
-        return self.quotes.users_to_grant
-
-    @property
-    def pd_materialized_views(self) -> tuple[str, ...]:
-        return _with_default_schema(self.pd.mviews_to_refresh, schema_name=self.pd_schema)
-
-    @property
-    def pd_grant_select_users(self) -> tuple[str, ...]:
-        return self.pd.users_to_grant
-
-    @property
-    def sales_op_materialized_views(self) -> tuple[str, ...]:
-        return _with_default_schema(self.sales_op.mviews_to_refresh, schema_name=self.sales_op_schema)
-
-    @property
-    def sales_op_grant_select_users(self) -> tuple[str, ...]:
-        return self.sales_op.users_to_grant
-
-    def quotes_nsi_table_schema_reference(self, table_name: str) -> str:
-        return f"{self.quotes_nsi_schema}.{table_name}"
-
-    def quotes_table_schema_reference(self, table_name: str) -> str:
-        return f"{self.quotes_schema}.{table_name}"
-
-    def pd_table_name(self, table_name: str) -> str:
-        return table_name
-
-    def pd_table_schema_reference(self, table_name: str) -> str:
-        return f"{self.pd_schema}.{self.pd_table_name(table_name)}"
-
-    def sales_op_table_schema_reference(self, table_name: str) -> str:
-        return f"{self.sales_op_schema}.{table_name}"
 
     def sqlalchemy_url(self, *, database: str | None = None) -> URL:
         return URL.create(
@@ -406,13 +379,11 @@ def _with_default_schema(values: tuple[str, ...], *, schema_name: str) -> tuple[
 
 
 def _validate_imap_settings(settings: Settings) -> None:
-    imap_sources = [
-        ("quotes_nsi.sources.imap_subject_pattern", settings.quotes_nsi.sources),
-        ("quotes.sources.imap_subject_pattern", settings.quotes.sources),
-        ("pd.sources.imap_subject_pattern", settings.pd.sources),
-        ("sales_op.sources.imap_subject_pattern", settings.sales_op.sources),
+    active_imap_sources = [
+        (f"{code}.sources.imap_subject_pattern", module.sources)
+        for code, module in settings.modules.items()
+        if module.sources.source == "imap"
     ]
-    active_imap_sources = [(name, source) for name, source in imap_sources if source.source == "imap"]
     if not active_imap_sources:
         return
 

@@ -21,7 +21,7 @@ def build_payload(settings: Settings, source_path: Path) -> DictionaryPayload:
         end_column="is_change_scenario_to_fact",
     )
     return build_dictionary_payload(
-        table_reference=settings.quotes_nsi_table_schema_reference(TABLE_NAME),
+        table_reference=settings.modules["quotes_nsi"].table_reference(TABLE_NAME),
         selected_frame=selected_frame,
         primary_key_columns=PRIMARY_KEY_COLUMNS,
         column_kinds=dict.fromkeys(BOOLEAN_COLUMNS, "bool"),

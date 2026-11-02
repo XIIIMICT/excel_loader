@@ -35,7 +35,8 @@ DEFAULT_FILE_PATTERN = r".*\.xlsx$"
 
 
 async def run_sales_op(settings: Settings) -> ModuleOutcome:
-    data_dir = settings.sales_op.sources.data_dir
+    module = settings.modules["sales_op"]
+    data_dir = module.sources.data_dir
     try:
         specification = read_sales_op_specification(data_dir / SPECIFICATION_FILE_NAME)
     except SalesOpError as error:
@@ -45,7 +46,7 @@ async def run_sales_op(settings: Settings) -> ModuleOutcome:
     try:
         with resolve_all_pattern_sources(
             settings,
-            source_config=settings.sales_op.sources,
+            source_config=module.sources,
             data_dir=data_dir,
             default_file_pattern=DEFAULT_FILE_PATTERN,
             recursive_local=True,
@@ -223,19 +224,19 @@ async def _replace_tables(
 ) -> tuple[tuple[Table, ...], int]:
     loaded_tables: list[Table] = []
     failures = 0
-    history_table = await prepare_source_history(engine, users_to_grant=settings.sales_op_grant_select_users)
+    history_table = await prepare_source_history(engine, users_to_grant=settings.modules["sales_op"].users_to_grant)
     for source_code, source_specification in specification.sources.items():
         if source_code not in rows_by_source:
             continue
         table = build_dictionary_table(
-            table_reference=settings.sales_op_table_schema_reference(source_table_name(source_code)),
+            table_reference=settings.modules["sales_op"].table_reference(source_table_name(source_code)),
             columns=source_specification.table_columns,
             primary_key_columns=(),
         )
         try:
             storage = await inspect_storage(table, engine=engine)
             if storage.needs_seed:
-                await prepare_storage(table, engine=engine, users_to_grant=settings.sales_op_grant_select_users)
+                await prepare_storage(table, engine=engine, users_to_grant=settings.modules["sales_op"].users_to_grant)
             entries = tuple(
                 SourceHistoryEntry(
                     loaded_at=entry.loaded_at,

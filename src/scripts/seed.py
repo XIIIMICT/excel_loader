@@ -119,20 +119,21 @@ async def seed_pd(settings: Settings) -> None:
 
 
 async def _grant_select(settings: Settings, engine: AsyncEngine, tables: PdTables) -> None:
-    if not settings.pd_grant_select_users:
+    module = settings.modules["pd"]
+    if not module.users_to_grant:
         return
 
     granted_roles, skipped_roles = await grant_usage_on_schema_to_existing_roles(
         engine,
-        schema_name=settings.pd_schema,
-        role_names=settings.pd_grant_select_users,
+        schema_name=module.schema_name,
+        role_names=module.users_to_grant,
     )
     if granted_roles:
-        LOGGER.info("Выданы права USAGE на схему %s пользователям: %s.", settings.pd_schema, ", ".join(granted_roles))
+        LOGGER.info("Выданы права USAGE на схему %s пользователям: %s.", module.schema_name, ", ".join(granted_roles))
     if skipped_roles:
         LOGGER.info(
             "Пользователи не найдены и пропущены при выдаче USAGE на схему %s: %s.",
-            settings.pd_schema,
+            module.schema_name,
             ", ".join(skipped_roles),
         )
 
@@ -140,7 +141,7 @@ async def _grant_select(settings: Settings, engine: AsyncEngine, tables: PdTable
         granted_roles, skipped_roles = await grant_select_on_table_to_existing_roles(
             engine,
             table=table,
-            role_names=settings.pd_grant_select_users,
+            role_names=module.users_to_grant,
         )
         table_reference = f"{table.schema}.{table.name}"
         if granted_roles:
@@ -158,7 +159,8 @@ async def _grant_select(settings: Settings, engine: AsyncEngine, tables: PdTable
 
 
 async def _drop_pd_views(settings: Settings, connection: AsyncConnection) -> None:
-    view_prefix = settings.pd_table_name("pd_view")
+    module = settings.modules["pd"]
+    view_prefix = "pd_view"
     result = await connection.execute(
         text(
             """
@@ -172,10 +174,10 @@ async def _drop_pd_views(settings: Settings, connection: AsyncConnection) -> Non
             ORDER BY cls.relname DESC
             """,
         ),
-        {"schema_name": settings.pd_schema, "view_pattern": f"{view_prefix}%"},
+        {"schema_name": module.schema_name, "view_pattern": f"{view_prefix}%"},
     )
     for view_name in [str(row["relname"]) for row in result.mappings()]:
-        qualified_view_name = f"{quote_identifier(settings.pd_schema)}.{quote_identifier(view_name)}"
+        qualified_view_name = f"{quote_identifier(module.schema_name)}.{quote_identifier(view_name)}"
         await connection.execute(
             text(f"DROP VIEW IF EXISTS {qualified_view_name} CASCADE"),
         )

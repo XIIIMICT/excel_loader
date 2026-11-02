@@ -20,7 +20,7 @@ def build_payload(settings: Settings, source_path: Path) -> DictionaryPayload:
     frame, metadata = read_single_sheet_frame(source_path, timezone=settings.app_timezone)
     selected_frame = select_columns_excluding_checks(frame)
     return build_dictionary_payload(
-        table_reference=settings.quotes_nsi_table_schema_reference(TABLE_NAME),
+        table_reference=settings.modules["quotes_nsi"].table_reference(TABLE_NAME),
         selected_frame=selected_frame,
         primary_key_columns=PRIMARY_KEY_COLUMNS,
         metadata=metadata,

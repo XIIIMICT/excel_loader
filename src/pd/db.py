@@ -67,7 +67,7 @@ async def load_report_to_db(
 ) -> PdLoadResult:
     tables = build_pd_tables(settings)
     async with engine.begin() as connection:
-        await _ensure_pd_storage(connection, tables, role_names=settings.pd_grant_select_users)
+        await _ensure_pd_storage(connection, tables, role_names=settings.modules["pd"].users_to_grant)
         reference_ids, changes = await _resolve_report_references(connection, tables, report)
         deleted_rows = await _replace_data_for_date(connection, tables.data, report, reference_ids=reference_ids)
         view_result = await create_or_replace_pd_view(settings, connection, tables)
@@ -94,7 +94,7 @@ async def load_report_to_db(
         await _grant_select_on_relation(
             connection,
             view_result.view_name,
-            role_names=settings.pd_grant_select_users,
+            role_names=settings.modules["pd"].users_to_grant,
         )
 
     return PdLoadResult(
@@ -111,13 +111,14 @@ async def create_or_replace_pd_view(
     tables: PdTables,
 ) -> ViewBuildResult:
     indicators = await _fetch_indicators(connection, tables.indicators)
-    base_view_name = settings.pd_table_name("pd_view")
+    module = settings.modules["pd"]
+    base_view_name = "pd_view"
 
     async def query_for(view_name: str) -> str:
         return _pd_view_query(
             tables,
             indicators=indicators,
-            view_reference=f"{quote_identifier(settings.pd_schema)}.{quote_identifier(view_name)}",
+            view_reference=f"{quote_identifier(module.schema_name)}.{quote_identifier(view_name)}",
             replace=True,
         )
 
@@ -125,13 +126,13 @@ async def create_or_replace_pd_view(
         return _pd_view_query(
             tables,
             indicators=indicators,
-            view_reference=f"{quote_identifier(settings.pd_schema)}.{quote_identifier(view_name)}",
+            view_reference=f"{quote_identifier(module.schema_name)}.{quote_identifier(view_name)}",
             replace=False,
         )
 
     view_result = await _create_or_replace_view_with_fallback(
         connection,
-        schema_name=settings.pd_schema,
+        schema_name=module.schema_name,
         base_view_name=base_view_name,
         query_for=query_for,
         fallback_query_for=fallback_query_for,

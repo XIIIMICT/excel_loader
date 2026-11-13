@@ -1,32 +1,78 @@
 from datetime import date
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pandas as pd
 import pytest
+from openpyxl import Workbook
 
 from business_errors import DuplicatePrimaryKeyError
 from dictionaries.quotes import sci
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from config import Settings
 
-PROJECT_DIR = Path(__file__).resolve().parents[1]
+
+def _new_sci_workbook() -> Workbook:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "SBR1502 East China Mrkt Price"
+    sheet["D3"] = "product 1"
+    sheet["A9"] = "Дата"
+    sheet["B9"] = "Товар"
+    sheet["D9"] = "Марка"
+    sheet["P9"] = "CIF China, $/т"
+    sheet["A10"], sheet["B10"], sheet["D10"], sheet["P10"] = date(2005, 5, 5), "SBR", 1488, 100.5
+    return workbook
 
 
-def test_blank_row_ends_the_data_block(settings: Settings) -> None:
-    source_path = PROJECT_DIR / "mock_data" / "quotes" / "SCI" / "SCI СКС_new.XLSX"
-
-    payload = sci.build_payload(settings, (source_path,)).payload
-
-    # Two real rows; the blank separator row and everything after it (a repeated
-    # duplicate row and a total row) are not part of the report.
-    assert len(payload.rows) == 2
-    assert [row["pub_date"] for row in payload.rows] == [date(2005, 5, 5), date(2007, 8, 1)]
+@pytest.fixture
+def sci_source_path(tmp_path: Path) -> Path:
+    path = tmp_path / "SCI СКС_new.XLSX"
+    _new_sci_workbook().save(path)
+    return path
 
 
-def test_duplicate_sci_primary_key_is_an_error(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
-    source_path = PROJECT_DIR / "mock_data" / "quotes" / "SCI" / "SCI СКС_new.XLSX"
+def test_skips_rows_without_a_product_and_reads_past_aggregate_rows(
+    settings: Settings,
+    sci_source_path: Path,
+) -> None:
+    workbook = _new_sci_workbook()
+    sheet = workbook.active
+    # An aggregate row with a date but no product (only calculated prices).
+    sheet["A11"], sheet["H11"], sheet["P11"] = date(2023, 1, 1), 11200, 110.5
+    # A monthly aggregate row with a month name instead of a date.
+    sheet["A12"], sheet["H12"], sheet["P12"] = "Февраль", 11800, 120.5
+    # A valid quote row after the aggregates: must still be read.
+    sheet["A13"], sheet["B13"], sheet["D13"], sheet["P13"] = date(2013, 8, 1), "SBR", 1488, 200.5
+    workbook.save(sci_source_path)
+
+    payload = sci.build_payload(settings, (sci_source_path,)).payload
+
+    assert [row["pub_date"] for row in payload.rows] == [date(2005, 5, 5), date(2013, 8, 1)]
+    assert [row["avg_price"] for row in payload.rows] == [100.5, 200.5]
+
+
+def test_fully_blank_row_ends_the_data_block(settings: Settings, sci_source_path: Path) -> None:
+    workbook = _new_sci_workbook()
+    sheet = workbook.active
+    # Row 11 is fully empty -> stop. Row 12 has a product but must not be read.
+    sheet["A12"], sheet["B12"], sheet["D12"], sheet["P12"] = date(2013, 8, 1), "SBR", 1488, 200.5
+    workbook.save(sci_source_path)
+
+    payload = sci.build_payload(settings, (sci_source_path,)).payload
+
+    assert len(payload.rows) == 1
+    assert payload.rows[0]["pub_date"] == date(2005, 5, 5)
+    assert payload.rows[0]["avg_price"] == 100.5
+
+
+def test_duplicate_sci_primary_key_is_an_error(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    sci_source_path: Path,
+) -> None:
     source_frame = pd.DataFrame(
         {
             "Дата": [date(2026, 7, 1), date(2026, 7, 1)],
@@ -38,11 +84,14 @@ def test_duplicate_sci_primary_key_is_an_error(settings: Settings, monkeypatch: 
     monkeypatch.setattr(sci, "_read_source_frames", lambda _source_path: ([source_frame], []))
 
     with pytest.raises(DuplicatePrimaryKeyError):
-        sci.build_payload(settings, (source_path,))
+        sci.build_payload(settings, (sci_source_path,))
 
 
-def test_builds_sci_payload_with_required_columns(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
-    source_path = PROJECT_DIR / "mock_data" / "quotes" / "SCI" / "SCI СКС_new.XLSX"
+def test_builds_sci_payload_with_required_columns(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    sci_source_path: Path,
+) -> None:
     source_frame = pd.DataFrame(
         {
             "Дата": [date(2026, 7, 1)],
@@ -53,7 +102,7 @@ def test_builds_sci_payload_with_required_columns(settings: Settings, monkeypatc
     )
     monkeypatch.setattr(sci, "_read_source_frames", lambda _source_path: ([source_frame], []))
 
-    result = sci.build_payload(settings, (source_path,))
+    result = sci.build_payload(settings, (sci_source_path,))
     payload = result.payload
     columns = {column.name: column for column in payload.columns}
 

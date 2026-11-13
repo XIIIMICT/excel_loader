@@ -3,13 +3,12 @@ from typing import TYPE_CHECKING, cast
 
 import pandas as pd
 
-from business_errors import CellTypeConversionError, SourceColumnMissingError
+from business_errors import SourceColumnMissingError
 from dictionary_models import CombinedDictionaryPayload, WorkbookMetadata
 from excel_parser import (
     EXCEL_ENGINE,
     build_cell_locations,
     build_dictionary_payload,
-    convert_excel_value,
     excel_column_name,
     read_workbook_metadata,
 )
@@ -97,19 +96,25 @@ def _read_sheet_frame(workbook: pd.ExcelFile, sheet_name: str) -> tuple[pd.DataF
 
     rows: list[dict[str, object]] = []
     locations: list[dict[str, str]] = []
-    for _, source_row in raw_frame.iloc[header_row + 1 :].iterrows():
-        pub_date = source_row.iloc[column_indexes["Дата"]]
-        product = _clean_component(source_row.iloc[column_indexes["Товар"]])
-        brand = _clean_component(source_row.iloc[column_indexes["Марка"]])
-        if not _is_date_value(pub_date) or not product or not brand:
-            # A row without a date/product/brand ends the data block: the blank
-            # separator row and everything after it (total rows, repeated data)
-            # are not part of the report.
+    column_letters = {
+        "Дата": excel_column_name(column_indexes["Дата"] + 1),
+        "CIF China, $/т": excel_column_name(column_indexes["CIF China, $/т"] + 1),
+    }
+    for row_index, source_row in raw_frame.iloc[header_row + 1 :].iterrows():
+        if source_row.map(_is_blank_cell).all():
+            # A fully empty row ends the data block: everything after it
+            # (repeated data, totals) is not part of the report.
             break
+        product = _clean_component(source_row.iloc[column_indexes["Товар"]])
+        if not product:
+            # Monthly/aggregate rows keep only calculated prices (and a month
+            # name instead of a date). They are not quotes: skip, keep reading.
+            continue
+        brand = _clean_component(source_row.iloc[column_indexes["Марка"]])
         product_version = MARKET_SUFFIX_PATTERN.sub("", f"{product} {brand}").strip()
         rows.append(
             {
-                "Дата": pub_date,
+                "Дата": source_row.iloc[column_indexes["Дата"]],
                 "prod_version": f"{product_version} CIF China, USD/т",
                 "CIF China, $/т": source_row.iloc[column_indexes["CIF China, $/т"]],
                 "product_id": product_id,
@@ -118,11 +123,8 @@ def _read_sheet_frame(workbook: pd.ExcelFile, sheet_name: str) -> tuple[pd.DataF
         locations.append(
             build_cell_locations(
                 sheet_name=sheet_name,
-                header_row=header_row + 1,
-                column_letters={
-                    "Дата": excel_column_name(column_indexes["Дата"] + 1),
-                    "CIF China, $/т": excel_column_name(column_indexes["CIF China, $/т"] + 1),
-                },
+                header_row=row_index,
+                column_letters=column_letters,
                 row_count=1,
             )[0],
         )
@@ -157,9 +159,7 @@ def _clean_component(value: object) -> str:
     return MARKET_SUFFIX_PATTERN.sub("", _normalize_text(value)).strip()
 
 
-def _is_date_value(value: object) -> bool:
-    try:
-        converted = convert_excel_value(value, kind="date", cell_reference="Дата")
-    except CellTypeConversionError:
-        return False
-    return converted is not None
+def _is_blank_cell(value: object) -> bool:
+    if value is None or pd.isna(value):
+        return True
+    return _normalize_text(value) == ""

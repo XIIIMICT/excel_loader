@@ -1,8 +1,20 @@
+import logging
+from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
+from openpyxl import Workbook
+
+from dictionary_models import WorkbookMetadata
 from excel_parser import convert_excel_value
 from sales_op.excel_parser import _bind_source_columns, parse_sales_op_workbook
+from sales_op.models import SelectedSalesOpFile
+from sales_op.runner import _mark_processed_files
 from sales_op.specification import SPECIFICATION_FILE_NAME, _read_sources, read_sales_op_specification
+from source_resolver import _is_processed_sales_op_file, _resolve_folder_sources_by_pattern
+
+if TYPE_CHECKING:
+    import pytest
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 MOCK_SALES_OP_DIR = PROJECT_DIR / "mock_data" / "sales_op"
@@ -114,3 +126,112 @@ class TestSalesOpSpecification:
         assert all("date_upload" not in row for row in parsed.rows)
         assert all("date_modified" not in row for row in parsed.rows)
         assert all("user_name" not in row for row in parsed.rows)
+
+
+def _synthetic_plan(path: Path) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet["A1"] = "План продаж :"
+    sheet["B1"] = "2026-07-01"
+    headers = (
+        "Производитель",
+        "Продавец",
+        "Номенклатурная группа",
+        "Наименование контрагента",
+        "Объем продаж, тонн",
+        "Комментарии",
+    )
+    for column, header in enumerate(headers, start=1):
+        sheet.cell(row=2, column=column, value=header)
+    sheet.append(("P1", "S1", "G1", "Client A", 10, None))
+    sheet.append(("P1", "S1", "G1", None, 20, None))  # empty client -> skipped
+    sheet.append((None,) * len(headers))  # fully blank -> stop
+    sheet.append(("P2", "S2", "G2", "Client B", 30, None))  # must not be read
+    workbook.save(path)
+
+
+def test_skips_rows_without_client_name_and_stops_at_blank_row(tmp_path: Path) -> None:
+    specification = read_sales_op_specification(MOCK_SALES_OP_DIR / SPECIFICATION_FILE_NAME)
+    source_path = tmp_path / "plan.xlsx"
+    _synthetic_plan(source_path)
+
+    parsed = parse_sales_op_workbook(
+        source_path,
+        source_specification=specification.sources["bsk_polymers"],
+    )
+
+    assert len(parsed.rows) == 1
+    assert parsed.rows[0]["client_name"] == "Client A"
+    assert parsed.rows[0]["producer_code"] == "P1"
+
+
+def test_resolve_folder_sources_skips_underscore_prefixed_files(tmp_path: Path) -> None:
+    (tmp_path / "plan.xlsx").write_bytes(b"")
+    (tmp_path / "_processed_plan.xlsx").write_bytes(b"")
+
+    sources = _resolve_folder_sources_by_pattern(
+        data_dir=tmp_path,
+        file_pattern=r".*\.xlsx$",
+        allow_empty=True,
+        skip_processed_sales_op_files=True,
+    )
+
+    assert [source.path.name for source in sources] == ["plan.xlsx"]
+    assert _is_processed_sales_op_file("_processed_plan.xlsx")
+
+    # Other modules must not inherit the sales_op-specific marker filter.
+    unfiltered = _resolve_folder_sources_by_pattern(
+        data_dir=tmp_path,
+        file_pattern=r".*\.xlsx$",
+        allow_empty=True,
+    )
+    assert [source.path.name for source in unfiltered] == ["_processed_plan.xlsx", "plan.xlsx"]
+
+
+def _selected_file(path: Path, source_code: str = "mfk") -> SelectedSalesOpFile:
+    moment = datetime(2026, 7, 25, tzinfo=UTC)
+    return SelectedSalesOpFile(
+        source_code=source_code,
+        path=path,
+        display_name=str(path),
+        original_name=path.name,
+        plan_date=date(2026, 7, 1),
+        modified_at=moment,
+        metadata=WorkbookMetadata("tester", moment, moment),
+        history_reference=str(path),
+    )
+
+
+def test_mark_processed_files_renames_only_loaded_sources(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    loaded = tmp_path / "loaded.xlsx"
+    other = tmp_path / "other.xlsx"
+    loaded.write_bytes(b"")
+    other.write_bytes(b"")
+
+    with caplog.at_level(logging.INFO, logger="excel_loader"):
+        warnings = _mark_processed_files(
+            (_selected_file(loaded), _selected_file(other, source_code="bsk_soda")),
+            loaded_source_codes={"mfk"},
+        )
+
+    assert warnings == 0
+    assert not loaded.exists()
+    assert (tmp_path / "_loaded.xlsx").exists()
+    assert other.exists(), "a source whose table was not loaded must be retried next run"
+
+
+def test_mark_processed_files_warns_when_rename_fails(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    loaded = tmp_path / "loaded.xlsx"
+    loaded.write_bytes(b"")
+    target = tmp_path / "_loaded.xlsx"
+    target.mkdir()  # rename onto an existing directory fails
+
+    with caplog.at_level(logging.WARNING, logger="excel_loader"):
+        warnings = _mark_processed_files(
+            (_selected_file(loaded),),
+            loaded_source_codes={"mfk"},
+        )
+
+    assert warnings == 1
+    assert loaded.exists()
+    assert any("не удалось переименовать" in record.getMessage() for record in caplog.records)

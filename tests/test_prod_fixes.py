@@ -13,6 +13,7 @@ Production-driven regressions for three prod complaints.
   an escaped string literal.
 """
 
+import logging
 import re
 import warnings
 import zipfile
@@ -27,6 +28,8 @@ from sales_op.excel_parser import _workbook_warnings_suppressed
 from source_resolver import _is_excel_owner_file, _resolve_folder_sources_by_pattern
 
 if TYPE_CHECKING:
+    import pytest
+
     from config import Settings
 
 UNKNOWN_EXTENSION_URI = "{00000000-0000-0000-0000-000000000000}"
@@ -75,20 +78,52 @@ def test_workbook_warnings_suppressed_hides_lazy_openpyxl_extension_warning(tmp_
     # Under the sales_op scope the same read stays quiet.
     with warnings.catch_warnings(record=True) as suppressed:
         warnings.simplefilter("always")
-        with _workbook_warnings_suppressed():
+        with _workbook_warnings_suppressed(source_path):
             workbook = load_openpyxl_workbook(source_path, data_only=True, read_only=True)
             tuple(workbook.active.iter_rows(values_only=True))
             workbook.close()
     assert not [w for w in suppressed if EXTENSION_WARNING_RE.search(str(w.message))]
 
 
-def test_workbook_warnings_suppressed_does_not_mask_unrelated_user_warning() -> None:
+def test_workbook_warnings_suppressed_does_not_mask_unrelated_user_warning(tmp_path: Path) -> None:
     """The filter is narrow: an unrelated UserWarning still surfaces."""
     with warnings.catch_warnings(record=True) as captured:
         warnings.simplefilter("always")
-        with _workbook_warnings_suppressed():
+        with _workbook_warnings_suppressed(tmp_path / "book.xlsx"):
             warnings.warn("unrelated conversion problem", UserWarning, stacklevel=2)
     assert any("unrelated conversion problem" in str(w.message) for w in captured)
+
+
+def test_workbook_warnings_suppressed_logs_openpyxl_date_warning(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Openpyxl's date-serial warning is hidden, but logged with the file name."""
+    source_path = tmp_path / "bad_date.xlsx"
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet["A1"] = 99999999  # serial beyond the max Excel date
+    worksheet["A1"].number_format = "dd.mm.yyyy"
+    worksheet["B1"] = "ok"
+    workbook.save(source_path)
+
+    with (
+        warnings.catch_warnings(record=True) as leaked,
+        caplog.at_level(logging.WARNING, logger="excel_loader"),
+        _workbook_warnings_suppressed(source_path),
+    ):
+        warnings.simplefilter("always")
+        book = load_openpyxl_workbook(source_path, data_only=True, read_only=True)
+        values = tuple(book.active.iter_rows(values_only=True))
+        book.close()
+
+    assert not leaked, "openpyxl's date warning must not reach the default warning handler"
+    assert values == (("#VALUE!", "ok"),)
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(
+        "openpyxl" in message and str(source_path) in message and "A1" in message and "99999999" in message
+        for message in messages
+    ), messages
 
 
 def test_is_excel_owner_file_detects_lock_prefix() -> None:

@@ -1,9 +1,10 @@
+import re
+import warnings
 from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING
-from warnings import catch_warnings, filterwarnings
 
 from openpyxl.utils import get_column_letter
 from openpyxl.utils.datetime import from_excel
@@ -41,6 +42,11 @@ PRODUCER_HEADER = "производитель"
 COMMENTS_HEADER = "комментарии"
 PRODUCER_TARGET = "producer_code"
 SELLER_TARGET = "seller_code"
+CLIENT_NAME_TARGET = "client_name"
+# openpyxl emits this UserWarning from worksheet._reader when a date-formatted
+# numeric cell holds a serial outside the supported date range; the cell is
+# then returned as the error value ``#VALUE!``.
+OPENPYXL_DATE_WARNING = r"is marked as a date but the serial value .* is outside the limits for dates"
 LOGGER = get_logger("sales_op")
 
 
@@ -49,7 +55,7 @@ def inspect_sales_op_workbook(
     *,
     timezone: tzinfo,
 ) -> tuple[date, datetime, WorkbookMetadata]:
-    with _workbook_warnings_suppressed():
+    with _workbook_warnings_suppressed(source_path):
         workbook = _load_workbook(source_path)
         try:
             worksheet = _first_visible_sheet(workbook)
@@ -68,7 +74,7 @@ def parse_sales_op_workbook(
     source_specification: SalesOpSourceSpecification,
     metadata: WorkbookMetadata | None = None,
 ) -> ParsedSalesOpFile:
-    with _workbook_warnings_suppressed():
+    with _workbook_warnings_suppressed(source_path):
         workbook = _load_workbook(source_path)
         try:
             worksheet = _first_visible_sheet(workbook)
@@ -94,11 +100,21 @@ def parse_sales_op_workbook(
             warning_count = 0
             producer_index = bound_columns.get(PRODUCER_TARGET)
             seller_index = bound_columns.get(SELLER_TARGET)
+            client_name_index = bound_columns.get(CLIENT_NAME_TARGET)
             for row_number, raw_row in enumerate(
                 worksheet.iter_rows(min_row=header_row + 1, values_only=True),
                 start=header_row + 1,
             ):
-                if _is_non_plan_row(raw_row, producer_index=producer_index, seller_index=seller_index):
+                if all(_is_blank_cell(value) for value in raw_row):
+                    # A fully empty row ends the plan block; everything after it
+                    # (service rows, totals) is not data.
+                    break
+                if _is_non_plan_row(
+                    raw_row,
+                    producer_index=producer_index,
+                    seller_index=seller_index,
+                    client_name_index=client_name_index,
+                ):
                     continue
                 prepared_row, row_warning_count = _prepare_row(
                     raw_row,
@@ -239,8 +255,13 @@ def _is_non_plan_row(
     *,
     producer_index: int | None,
     seller_index: int | None,
+    client_name_index: int | None,
 ) -> bool:
-    return _is_blank_cell(_cell_at(raw_row, producer_index)) or _is_blank_cell(_cell_at(raw_row, seller_index))
+    return (
+        _is_blank_cell(_cell_at(raw_row, producer_index))
+        or _is_blank_cell(_cell_at(raw_row, seller_index))
+        or _is_blank_cell(_cell_at(raw_row, client_name_index))
+    )
 
 
 def _cell_at(raw_row: tuple[object, ...], index: int | None) -> object | None:
@@ -315,21 +336,36 @@ class _RowContext:
 
 
 @contextmanager
-def _workbook_warnings_suppressed() -> Generator[None]:
-    # ``load_openpyxl_workbook`` filters this warning during ``load_workbook``,
-    # but a ``read_only=True`` workbook parses its sheet lazily: the
-    # ``"Unknown extension … will be removed"`` warning fires from
-    # ``openpyxl.worksheet._reader`` during ``iter_rows``/cell access, after
-    # ``load_openpyxl_workbook`` has returned. This context wraps the whole
-    # workbook lifecycle so the lazy-read warnings stay covered.
+def _workbook_warnings_suppressed(source_path: Path) -> Generator[None]:
+    # ``load_openpyxl_workbook`` filters the "Unknown extension" warning during
+    # ``load_workbook``, but a ``read_only=True`` workbook parses its sheet
+    # lazily: both that warning and the "serial value outside the limits for
+    # dates" warning fire from ``openpyxl.worksheet._reader`` during
+    # ``iter_rows``/cell access, after ``load_openpyxl_workbook`` has returned.
+    # This context wraps the whole workbook lifecycle so the lazy-read warnings
+    # stay covered.
     #
-    # Narrow on message+category+module: a blanket ``simplefilter("ignore",
-    # UserWarning)`` would also mask genuine conversion warnings.
-    with catch_warnings():
-        filterwarnings(
-            "ignore",
-            message=OPENPYXL_EXTENSION_WARNING,
-            category=UserWarning,
-            module=r"openpyxl\.worksheet\._reader",
-        )
+    # Both known openpyxl warnings are captured (``record=True`` keeps them
+    # from openpyxl's default stderr output). The extension warning is dropped;
+    # the date warning is re-emitted by our own logger with the source file
+    # name (openpyxl's text has none) — the cell itself is returned as
+    # ``#VALUE!`` and goes through the usual excel-error-to-NULL path, so no
+    # data is silently lost. Every other warning is re-issued after the scope,
+    # so nothing unrelated is masked and no global filter state is installed.
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
         yield
+
+    for warning in caught:
+        message = str(warning.message)
+        if warning.category is UserWarning and re.search(OPENPYXL_EXTENSION_WARNING, message):
+            continue
+        if warning.category is UserWarning and re.search(OPENPYXL_DATE_WARNING, message):
+            LOGGER.warning("План продаж: openpyxl в файле %s: %s", source_path, message)
+            continue
+        warnings.warn_explicit(
+            warning.message,
+            warning.category,
+            filename=warning.filename,
+            lineno=warning.lineno,
+        )

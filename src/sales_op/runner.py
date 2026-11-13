@@ -50,13 +50,14 @@ async def run_sales_op(settings: Settings) -> ModuleOutcome:
             data_dir=data_dir,
             default_file_pattern=DEFAULT_FILE_PATTERN,
             recursive_local=True,
+            skip_processed_sales_op_files=True,
         ) as source_files:
             selected_files, selection_warnings, inspection_failures = _select_source_files(
                 source_files,
                 specification_sources=specification.sources,
                 timezone=settings.app_timezone,
             )
-            rows_by_source, history_by_source, parse_warnings, parse_failures = _parse_selected_files(
+            rows_by_source, history_by_source, parse_warnings, parse_failures, parsed_files = _parse_selected_files(
                 selected_files,
                 specification_sources=specification.sources,
             )
@@ -72,6 +73,8 @@ async def run_sales_op(settings: Settings) -> ModuleOutcome:
             rows_by_source=rows_by_source,
             history_by_source=history_by_source,
         )
+        loaded_source_codes = {table.name.removeprefix("sales_op_") for table in loaded_tables}
+        rename_warnings = _mark_processed_files(parsed_files, loaded_source_codes=loaded_source_codes)
         view_reference = None
         view_failures = 0
         try:
@@ -88,7 +91,7 @@ async def run_sales_op(settings: Settings) -> ModuleOutcome:
         has_errors=inspection_failures + parse_failures + storage_failures + view_failures > 0,
         loaded_tables=loaded_tables,
         view_reference=view_reference,
-        has_warnings=selection_warnings + parse_warnings > 0,
+        has_warnings=selection_warnings + parse_warnings + rename_warnings > 0,
     )
 
 
@@ -173,9 +176,16 @@ def _parse_selected_files(
     selected_files: tuple[SelectedSalesOpFile, ...],
     *,
     specification_sources: dict[str, SalesOpSourceSpecification],
-) -> tuple[dict[str, list[DbRow]], dict[str, list[SourceHistoryEntry]], int, int]:
+) -> tuple[
+    dict[str, list[DbRow]],
+    dict[str, list[SourceHistoryEntry]],
+    int,
+    int,
+    tuple[SelectedSalesOpFile, ...],
+]:
     rows_by_source: dict[str, list[DbRow]] = defaultdict(list)
     history_by_source: dict[str, list[SourceHistoryEntry]] = defaultdict(list)
+    parsed_files: list[SelectedSalesOpFile] = []
     warnings = 0
     failures = 0
     for selected_file in selected_files:
@@ -189,6 +199,7 @@ def _parse_selected_files(
             failures += 1
             LOGGER.exception("План продаж: файл %s не обработан.", selected_file.display_name)
             continue
+        parsed_files.append(selected_file)
         rows_by_source[selected_file.source_code].extend(parsed.rows)
         source_specification = specification_sources[selected_file.source_code]
         metadata = selected_file.metadata
@@ -210,7 +221,7 @@ def _parse_selected_files(
             parsed.plan_date,
             len(parsed.rows),
         )
-    return dict(rows_by_source), dict(history_by_source), warnings, failures
+    return dict(rows_by_source), dict(history_by_source), warnings, failures, tuple(parsed_files)
 
 
 async def _replace_tables(
@@ -270,6 +281,44 @@ async def _replace_tables(
         loaded_tables.append(table)
         LOGGER.info("Данные таблицы %s.%s заменены: строк=%s.", table.schema, table.name, inserted)
     return tuple(loaded_tables), failures
+
+
+def _mark_processed_files(
+    parsed_files: tuple[SelectedSalesOpFile, ...],
+    *,
+    loaded_source_codes: set[str],
+) -> int:
+    """
+    Rename files whose plan was parsed and stored without errors.
+
+    A leading underscore marks the file as already loaded: the next run skips
+    it (see ``_is_processed_sales_op_file``). A file whose table failed to
+    replace is left untouched so it is retried on the next run; a rename that
+    fails is only a warning, never a load error.
+    """
+    warnings = 0
+    for selected_file in parsed_files:
+        if selected_file.source_code not in loaded_source_codes:
+            continue
+        if selected_file.display_name.startswith("IMAP:"):
+            # IMAP attachments live in a temporary folder; renaming them has
+            # no effect on the next run's discovery.
+            continue
+        source_path = selected_file.path
+        renamed_path = source_path.with_name(f"_{source_path.name}")
+        try:
+            source_path.rename(renamed_path)
+        except OSError as error:
+            warnings += 1
+            LOGGER.warning(
+                "План продаж: не удалось переименовать обработанный файл %s в %s: %s.",
+                source_path,
+                renamed_path.name,
+                error,
+            )
+            continue
+        LOGGER.info("План продаж: обработанный файл %s переименован в %s.", source_path.name, renamed_path.name)
+    return warnings
 
 
 def _classify_file(file_name: str, *, specification_sources: dict[str, SalesOpSourceSpecification]) -> str | None:

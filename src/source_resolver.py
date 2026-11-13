@@ -107,13 +107,14 @@ def resolve_pattern_sources(
 
 
 @contextmanager
-def resolve_all_pattern_sources(
+def resolve_all_pattern_sources(  # noqa: PLR0913
     settings: Settings,
     *,
     source_config: SourcesConfig,
     data_dir: Path,
     default_file_pattern: str,
     recursive_local: bool = False,
+    skip_processed_sales_op_files: bool = False,
 ) -> Generator[tuple[SourceFile, ...]]:
     file_pattern = source_config.file_pattern or default_file_pattern
     if source_config.source == "local":
@@ -122,6 +123,7 @@ def resolve_all_pattern_sources(
             file_pattern=file_pattern,
             recursive=recursive_local,
             allow_empty=True,
+            skip_processed_sales_op_files=skip_processed_sales_op_files,
         )
         return
 
@@ -131,6 +133,7 @@ def resolve_all_pattern_sources(
             file_pattern=file_pattern,
             source_config=source_config,
             collect_all=True,
+            skip_processed_sales_op_files=skip_processed_sales_op_files,
         ) as source_files:
             yield source_files
         return
@@ -157,6 +160,7 @@ def _resolve_folder_sources_by_pattern(
     file_pattern: str,
     recursive: bool = False,
     allow_empty: bool = False,
+    skip_processed_sales_op_files: bool = False,
 ) -> tuple[SourceFile, ...]:
     if not data_dir.exists():
         msg = f"папка источника не найдена: {data_dir}"
@@ -167,7 +171,10 @@ def _resolve_folder_sources_by_pattern(
     source_files = tuple(
         SourceFile(path=path, display_name=str(path), original_name=path.name)
         for path in sorted(candidates, key=lambda item: str(item).casefold())
-        if path.is_file() and pattern.fullmatch(path.name) and not _is_excel_owner_file(path.name)
+        if path.is_file()
+        and pattern.fullmatch(path.name)
+        and not _is_excel_owner_file(path.name)
+        and not (skip_processed_sales_op_files and _is_processed_sales_op_file(path.name))
     )
     if not source_files and not allow_empty:
         msg = f"в папке {data_dir} не найдено файлов по шаблону {file_pattern!r}"
@@ -182,6 +189,7 @@ def _resolve_imap_sources(
     file_pattern: str,
     source_config: SourcesConfig,
     collect_all: bool = False,
+    skip_processed_sales_op_files: bool = False,
 ) -> Generator[tuple[SourceFile, ...]]:
     host, user, password = _imap_credentials(settings)
     try:
@@ -204,6 +212,7 @@ def _resolve_imap_sources(
                 file_pattern=file_pattern,
                 source_config=source_config,
                 collect_all=collect_all,
+                skip_processed_sales_op_files=skip_processed_sales_op_files,
             )
         finally:
             with suppress(imaplib.IMAP4.error):
@@ -230,6 +239,7 @@ def _download_matching_attachments(  # noqa: PLR0913
     file_pattern: str,
     source_config: SourcesConfig,
     collect_all: bool,
+    skip_processed_sales_op_files: bool = False,
 ) -> tuple[SourceFile, ...]:
     status, payload = imap.search(None, "ALL")
     if status != "OK" or not payload or not payload[0]:
@@ -246,7 +256,11 @@ def _download_matching_attachments(  # noqa: PLR0913
         if not source_config.compiled_imap_subject_pattern.search(subject):
             continue
 
-        attachments = _matching_attachments(message, pattern)
+        attachments = _matching_attachments(
+            message,
+            pattern,
+            skip_processed_sales_op_files=skip_processed_sales_op_files,
+        )
         if not attachments:
             continue
 
@@ -280,7 +294,12 @@ def _fetch_email_message(imap: imaplib.IMAP4, message_id: str) -> EmailMessage |
     raise SourceError(msg)
 
 
-def _matching_attachments(message: EmailMessage | Message, pattern: re.Pattern[str]) -> tuple[tuple[str, bytes], ...]:
+def _matching_attachments(
+    message: EmailMessage | Message,
+    pattern: re.Pattern[str],
+    *,
+    skip_processed_sales_op_files: bool = False,
+) -> tuple[tuple[str, bytes], ...]:
     result: list[tuple[str, bytes]] = []
     for part in message.walk():
         if part.get_content_disposition() != "attachment":
@@ -294,6 +313,8 @@ def _matching_attachments(message: EmailMessage | Message, pattern: re.Pattern[s
         if not pattern.fullmatch(decoded_file_name):
             continue
         if _is_excel_owner_file(decoded_file_name):
+            continue
+        if skip_processed_sales_op_files and _is_processed_sales_op_file(decoded_file_name):
             continue
 
         content = part.get_payload(decode=True)
@@ -312,6 +333,12 @@ def _is_excel_owner_file(file_name: str) -> bool:
     # raises ``BadZipFile``; every enumeration path skips it regardless of the
     # configured file pattern so an open workbook never looks like a source.
     return file_name.startswith("~$")
+
+
+def _is_processed_sales_op_file(file_name: str) -> bool:
+    # A sales_op file successfully loaded in a previous run is renamed with a
+    # leading underscore; future runs must not load the same plan again.
+    return file_name.startswith("_")
 
 
 def _compile_file_pattern(file_pattern: str) -> re.Pattern[str]:

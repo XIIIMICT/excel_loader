@@ -89,8 +89,9 @@ class SelectedSalesOpFile:
 
 @dataclass(frozen=True, slots=True)
 class ParsedSalesOpFile:
+    """Parsed plan block; ``modified_at`` is only needed by the inspection, which selects files."""
+
     plan_date: date
-    modified_at: datetime
     sheet_name: str
     rows: list[DbRow]
     warning_count: int = 0

@@ -422,7 +422,6 @@ def _parse_selected_files(
                 parsed = parse_sales_op_workbook(
                     selected_file.path,
                     source_specification=source_specification,
-                    metadata=selected_file.metadata,
                 )
             except Exception:
                 failures += 1

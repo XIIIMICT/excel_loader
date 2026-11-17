@@ -11,7 +11,6 @@ from excel_parser import (
     build_cell_locations,
     build_dictionary_payload,
     excel_column_name,
-    read_sheet_names,
     read_workbook_metadata,
 )
 from source_resolver import SourceFileNotFoundError
@@ -57,24 +56,27 @@ def build_payload(settings: Settings, source_paths: tuple[Path, ...]) -> Combine
 def _read_source_frame(source_path: Path) -> tuple[pd.DataFrame, list[dict[str, str]]]:
     if not source_path.exists():
         raise SourceFileNotFoundError(source_path)
-    raw_frame = pd.read_excel(
-        source_path,
-        sheet_name=0,
-        header=None,
-        keep_default_na=False,
-        na_filter=False,
-        engine=EXCEL_ENGINE,
-    )
+    with pd.ExcelFile(source_path, engine=EXCEL_ENGINE) as workbook:
+        sheet_name = workbook.sheet_names[0]
+        raw_frame = pd.read_excel(
+            workbook,
+            sheet_name=0,
+            header=None,
+            keep_default_na=False,
+            na_filter=False,
+        )
     header_row = _find_header_row(raw_frame)
     header_values = [_normalize_header(value) for value in raw_frame.iloc[header_row]]
     column_indexes = {name: header_values.index(_normalize_header(name)) for name in REQUIRED_HEADERS}
 
-    rows: list[dict[str, object]] = []
-    for _, source_row in raw_frame.iloc[header_row + 1 :].iterrows():
-        rows.append({column_name: source_row.iloc[column_indexes[column_name]] for column_name in SOURCE_COLUMNS})
-    frame = pd.DataFrame(rows, columns=SOURCE_COLUMNS)
+    # A column slice rebuild instead of a per-row ``iterrows``: the values and
+    # the row order stay the same, the DataFrame is assembled once.
+    data = raw_frame.iloc[header_row + 1 :]
+    frame = data.iloc[:, [column_indexes[column_name] for column_name in SOURCE_COLUMNS]].copy()
+    frame.columns = list(SOURCE_COLUMNS)
+    frame = frame.reset_index(drop=True)
     locations = build_cell_locations(
-        sheet_name=read_sheet_names(source_path)[0],
+        sheet_name=sheet_name,
         header_row=header_row + 1,
         column_letters={
             column_name: excel_column_name(column_indexes[column_name] + 1) for column_name in SOURCE_COLUMNS
@@ -86,8 +88,11 @@ def _read_source_frame(source_path: Path) -> tuple[pd.DataFrame, list[dict[str, 
 
 def _find_header_row(frame: pd.DataFrame) -> int:
     required_names = set(REQUIRED_HEADERS)
-    for row_index, (_, row) in enumerate(frame.iterrows()):
-        values = {_normalize_header(value) for value in row if _normalize_header(value)}
+    normalized_rows = (
+        {normalized for normalized in map(_normalize_header, row) if normalized}
+        for row in frame.itertuples(index=False, name=None)
+    )
+    for row_index, values in enumerate(normalized_rows):
         if required_names <= values:
             return row_index
     raise SourceColumnMissingError(", ".join(REQUIRED_HEADERS))

@@ -89,6 +89,43 @@ def frame_origin(frame: pd.DataFrame) -> FrameOrigin | None:
     return origin if isinstance(origin, FrameOrigin) else None
 
 
+@dataclass(slots=True)
+class ExcelErrorWarnings:
+    """
+    Per-file collector for Excel-error cells replaced with NULL.
+
+    Logging every cell of a large sheet floods the log with one line per
+    ``#N/A``/``#VALUE!``/… value, so the collector counts them all and keeps
+    the first ``sample_limit`` coordinates; ``flush`` emits one summary line.
+    A loader that does not pass a collector keeps the per-cell log line.
+    """
+
+    source_name: str | None = None
+    sample_limit: int = 5
+    count: int = 0
+    samples: list[tuple[str, object]] = field(default_factory=list)
+
+    def record(self, value: object, cell_reference: str) -> None:
+        self.count += 1
+        if len(self.samples) < self.sample_limit:
+            self.samples.append((cell_reference, value))
+
+    def flush(self) -> int:
+        if self.count == 0:
+            return 0
+        samples = "; ".join(f"{value!r} в {cell_reference}" for cell_reference, value in self.samples)
+        remaining = self.count - len(self.samples)
+        tail = f"; и ещё {remaining}" if remaining > 0 else ""
+        LOGGER.warning(
+            "Excel-файл %s: %s ошибочных значений заменено на NULL: %s%s.",
+            self.source_name or "<неизвестный источник>",
+            self.count,
+            samples,
+            tail,
+        )
+        return self.count
+
+
 def build_cell_locations(
     *,
     sheet_name: str,
@@ -109,11 +146,6 @@ def build_cell_locations(
         }
         for row_position in range(row_count)
     ]
-
-
-def read_sheet_names(source_path: Path) -> tuple[str, ...]:
-    with pd.ExcelFile(source_path, engine=EXCEL_ENGINE) as workbook:
-        return tuple(workbook.sheet_names)
 
 
 def load_openpyxl_workbook(
@@ -194,22 +226,29 @@ def _parse_core_timestamp(timestamp: str | None) -> datetime | None:
         raise FileMetadataMissingError from error
 
 
-def read_workbook_metadata(source_path: Path, *, timezone: tzinfo) -> WorkbookMetadata:
+def read_workbook_metadata(
+    source_path: Path,
+    *,
+    timezone: tzinfo,
+    core_properties: WorkbookCoreProperties | None = None,
+) -> WorkbookMetadata:
     """
     Workbook metadata for the source history.
 
     ``read_core_properties`` serves every zip-based OOXML format, so
     ``file_modifier`` comes from the same ``docProps/core.xml`` part for
-    ``.xlsx`` and ``.xlsb``.
+    ``.xlsx`` and ``.xlsb``. A caller that already read the core properties
+    (sales_op needs ``modified`` too) passes them in — the package is opened
+    once, not twice.
     """
     if not source_path.exists():
         raise SourceFileNotFoundError(source_path)
 
-    core_properties = read_core_properties(source_path)
+    properties = core_properties if core_properties is not None else read_core_properties(source_path)
     return WorkbookMetadata(
         file_modifier=_extract_user_name(
-            last_modified_by=core_properties.last_modified_by,
-            creator=core_properties.creator,
+            last_modified_by=properties.last_modified_by,
+            creator=properties.creator,
         ),
         file_modified_at=datetime.fromtimestamp(source_path.stat().st_mtime, tz=timezone),
         loaded_at=datetime.now(tz=timezone),
@@ -222,15 +261,31 @@ def read_single_sheet_frame(
     timezone: tzinfo,
     sheet_name: str | int = 0,
 ) -> tuple[pd.DataFrame, WorkbookMetadata]:
+    """
+    Read one sheet plus its metadata.
+
+    One ``pandas.ExcelFile`` handle serves the sheet names, the first-row probe
+    (needed for the real column letters) and the value frame, so the workbook
+    package is opened once per loader instead of once per call.
+    """
     metadata = read_workbook_metadata(source_path, timezone=timezone)
-    frame = pd.read_excel(
-        source_path,
-        sheet_name=sheet_name,
-        keep_default_na=False,
-        na_filter=False,
-        engine=EXCEL_ENGINE,
-    )
-    first_column_index = _first_used_column_index(source_path, sheet_name=sheet_name)
+    with pd.ExcelFile(source_path, engine=EXCEL_ENGINE) as workbook:
+        sheet_names = tuple(workbook.sheet_names)
+        first_row = pd.read_excel(
+            workbook,
+            sheet_name=sheet_name,
+            header=None,
+            nrows=1,
+            keep_default_na=False,
+            na_filter=False,
+        )
+        frame = pd.read_excel(
+            workbook,
+            sheet_name=sheet_name,
+            keep_default_na=False,
+            na_filter=False,
+        )
+    first_column_index = _first_used_column_index(first_row)
     column_letters = {
         str(column): _excel_column_name(first_column_index + column_index + 1)
         for column_index, column in enumerate(frame.columns)
@@ -238,7 +293,7 @@ def read_single_sheet_frame(
     return (
         attach_frame_origin(
             frame,
-            sheet_name=_resolved_sheet_name(source_path, sheet_name=sheet_name),
+            sheet_name=_resolved_sheet_name(sheet_names, sheet_name=sheet_name),
             header_row=1,
             column_letters=column_letters,
         ),
@@ -246,30 +301,18 @@ def read_single_sheet_frame(
     )
 
 
-def _first_used_column_index(source_path: Path, *, sheet_name: str | int) -> int:
-    raw_frame = pd.read_excel(
-        source_path,
-        sheet_name=sheet_name,
-        header=None,
-        nrows=1,
-        keep_default_na=False,
-        na_filter=False,
-        engine=EXCEL_ENGINE,
-    )
-    if raw_frame.empty:
+def _first_used_column_index(first_row: pd.DataFrame) -> int:
+    if first_row.empty:
         return 0
-    header_row = raw_frame.iloc[0]
-    for column_index, value in enumerate(header_row):
+    for column_index, value in enumerate(first_row.iloc[0]):
         if str(value).strip():
             return column_index
     return 0
 
 
-def _resolved_sheet_name(source_path: Path, *, sheet_name: str | int) -> str:
+def _resolved_sheet_name(sheet_names: Sequence[str], *, sheet_name: str | int) -> str:
     if isinstance(sheet_name, str):
         return sheet_name
-    with pd.ExcelFile(source_path, engine=EXCEL_ENGINE) as workbook:
-        sheet_names = workbook.sheet_names
     if 0 <= sheet_name < len(sheet_names):
         return sheet_names[sheet_name]
     return str(sheet_name)
@@ -347,6 +390,7 @@ def build_dictionary_payload(  # noqa: PLR0913  # stable kwargs API for every lo
     origin = frame_origin(selected_frame)
     configured_column_kinds = column_kinds or {}
     configured_column_converters = column_converters or {}
+    excel_error_warnings = ExcelErrorWarnings(source_name=source_name)
     converter = _RowConverter(
         selected_columns=selected_columns,
         primary_key_columns=primary_key_columns,
@@ -358,32 +402,38 @@ def build_dictionary_payload(  # noqa: PLR0913  # stable kwargs API for every lo
         source_name=source_name,
         origin=origin,
         unique_columns=unique_columns,
+        excel_error_warnings=excel_error_warnings,
     )
 
     rows: list[DbRow] = []
-    for row_number, row in enumerate(selected_frame.itertuples(index=False, name=None), start=2):
-        row_position = row_number - 2
-        row_locations = (
-            cell_locations[row_position] if cell_locations is not None and row_position < len(cell_locations) else None
-        )
-        raw_row = dict(zip(selected_columns, row, strict=True))
-        if not _row_matches_where(raw_row, where_columns):
-            continue
-        if _should_skip_raw_filtered_row(raw_row, not_null_filtered_columns):
-            continue
-        row_reference = _row_reference(origin, row_locations=row_locations, row_number=row_number)
-        prepared_row = converter.convert(
-            row,
-            row_number=row_number,
-            row_position=row_position,
-            row_locations=row_locations,
-        )
-        if _should_skip_filtered_row(prepared_row, not_null_filtered_columns):
-            continue
-        converter.register_primary_key(prepared_row, row_number=row_number, row_reference=row_reference)
-        rows.append(prepared_row)
+    try:
+        for row_number, row in enumerate(selected_frame.itertuples(index=False, name=None), start=2):
+            row_position = row_number - 2
+            row_locations = (
+                cell_locations[row_position]
+                if cell_locations is not None and row_position < len(cell_locations)
+                else None
+            )
+            raw_row = dict(zip(selected_columns, row, strict=True))
+            if not _row_matches_where(raw_row, where_columns):
+                continue
+            if _should_skip_raw_filtered_row(raw_row, not_null_filtered_columns):
+                continue
+            row_reference = _row_reference(origin, row_locations=row_locations, row_number=row_number)
+            prepared_row = converter.convert(
+                row,
+                row_number=row_number,
+                row_position=row_position,
+                row_locations=row_locations,
+            )
+            if _should_skip_filtered_row(prepared_row, not_null_filtered_columns):
+                continue
+            converter.register_primary_key(prepared_row, row_number=row_number, row_reference=row_reference)
+            rows.append(prepared_row)
 
-    converter.raise_deferred_required_error()
+        converter.raise_deferred_required_error()
+    finally:
+        excel_error_warnings.flush()
 
     columns = _build_column_definitions(
         selected_columns=target_columns,
@@ -441,6 +491,7 @@ class _RowConverter:
     source_name: str | None
     origin: FrameOrigin | None
     unique_columns: tuple[str, ...]
+    excel_error_warnings: ExcelErrorWarnings
 
     warning_count: int = 0
     first_required_error: RequiredCellValueError | None = None
@@ -489,6 +540,7 @@ class _RowConverter:
                     source_name=self.source_name,
                     preserve_text=self.preserve_text_values,
                     nullable=nullable,
+                    excel_error_warnings=self.excel_error_warnings,
                 )
             prepared_value = prepared_row[column_name]
             if not nullable and prepared_value is None and self.first_required_error is None:
@@ -627,12 +679,14 @@ def convert_excel_value(  # noqa: PLR0913
     source_name: str | None = None,
     preserve_text: bool = False,
     nullable: bool = True,
+    excel_error_warnings: ExcelErrorWarnings | None = None,
 ) -> DbValue:
     excel_error_result = _excel_error_as_null(
         value,
         enabled=excel_errors_as_null,
         source_name=source_name,
         cell_reference=cell_reference,
+        warnings_collector=excel_error_warnings,
     )
     if excel_error_result:
         return None
@@ -703,15 +757,19 @@ def _excel_error_as_null(
     enabled: bool,
     source_name: str | None,
     cell_reference: str,
+    warnings_collector: ExcelErrorWarnings | None = None,
 ) -> bool:
     if not enabled or not _is_excel_error(value):
         return False
-    LOGGER.warning(
-        "Excel-файл %s: ошибочное значение %r в ячейке %s заменено на NULL.",
-        source_name or "<неизвестный источник>",
-        value,
-        cell_reference,
-    )
+    if warnings_collector is not None:
+        warnings_collector.record(value, cell_reference)
+    else:
+        LOGGER.warning(
+            "Excel-файл %s: ошибочное значение %r в ячейке %s заменено на NULL.",
+            source_name or "<неизвестный источник>",
+            value,
+            cell_reference,
+        )
     return True
 
 

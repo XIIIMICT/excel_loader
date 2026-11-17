@@ -1,5 +1,5 @@
 import re
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
@@ -7,7 +7,6 @@ from business_errors import SourceColumnMissingError
 from dictionary_models import CombinedDictionaryPayload, WorkbookMetadata
 from excel_parser import (
     EXCEL_ENGINE,
-    build_cell_locations,
     build_dictionary_payload,
     excel_column_name,
     read_workbook_metadata,
@@ -85,56 +84,55 @@ def _read_source_frames(source_path: Path) -> tuple[list[pd.DataFrame], list[dic
 
 
 def _read_sheet_frame(workbook: pd.ExcelFile, sheet_name: str) -> tuple[pd.DataFrame, list[dict[str, str]]]:
-    raw_frame = cast(
-        "pd.DataFrame",
-        workbook.parse(sheet_name=sheet_name, header=None, keep_default_na=False, na_filter=False),
-    )
+    raw_frame = pd.read_excel(workbook, sheet_name=sheet_name, header=None, keep_default_na=False, na_filter=False)
     header_row = _find_header_row(raw_frame)
     header_values = [_normalize_text(value) for value in raw_frame.iloc[header_row]]
     column_indexes = {name: header_values.index(_normalize_text(name)) for name in HEADER_NAMES}
     product_id = raw_frame.iloc[2, 3]
+    date_column = column_indexes["Дата"]
+    price_column = column_indexes["CIF China, $/т"]
+    date_letter = excel_column_name(date_column + 1)
+    price_letter = excel_column_name(price_column + 1)
 
     rows: list[dict[str, object]] = []
     locations: list[dict[str, str]] = []
-    column_letters = {
-        "Дата": excel_column_name(column_indexes["Дата"] + 1),
-        "CIF China, $/т": excel_column_name(column_indexes["CIF China, $/т"] + 1),
-    }
-    for row_index, source_row in raw_frame.iloc[header_row + 1 :].iterrows():
-        if source_row.map(_is_blank_cell).all():
+    for row_position, row in enumerate(raw_frame.iloc[header_row + 1 :].itertuples(index=False, name=None)):
+        if all(_is_blank_cell(value) for value in row):
             # A fully empty row ends the data block: everything after it
             # (repeated data, totals) is not part of the report.
             break
-        product = _clean_component(source_row.iloc[column_indexes["Товар"]])
+        product = _clean_component(row[column_indexes["Товар"]])
         if not product:
             # Monthly/aggregate rows keep only calculated prices (and a month
             # name instead of a date). They are not quotes: skip, keep reading.
             continue
-        brand = _clean_component(source_row.iloc[column_indexes["Марка"]])
+        brand = _clean_component(row[column_indexes["Марка"]])
         product_version = MARKET_SUFFIX_PATTERN.sub("", f"{product} {brand}").strip()
         rows.append(
             {
-                "Дата": source_row.iloc[column_indexes["Дата"]],
+                "Дата": row[date_column],
                 "prod_version": f"{product_version} CIF China, USD/т",
-                "CIF China, $/т": source_row.iloc[column_indexes["CIF China, $/т"]],
+                "CIF China, $/т": row[price_column],
                 "product_id": product_id,
             },
         )
+        excel_row = header_row + row_position + 2
         locations.append(
-            build_cell_locations(
-                sheet_name=sheet_name,
-                header_row=row_index,
-                column_letters=column_letters,
-                row_count=1,
-            )[0],
+            {
+                "Дата": f"{sheet_name}!{date_letter}{excel_row}",
+                "CIF China, $/т": f"{sheet_name}!{price_letter}{excel_row}",
+            },
         )
     return pd.DataFrame(rows, columns=SOURCE_COLUMNS), locations
 
 
 def _find_header_row(frame: pd.DataFrame) -> int:
     required_names = {_normalize_text(name) for name in HEADER_NAMES}
-    for row_index, (_, row) in enumerate(frame.iterrows()):
-        values = {_normalize_text(value) for value in row if _normalize_text(value)}
+    normalized_rows = (
+        {normalized for normalized in map(_normalize_text, row) if normalized}
+        for row in frame.itertuples(index=False, name=None)
+    )
+    for row_index, values in enumerate(normalized_rows):
         if required_names <= values:
             return row_index
     raise SourceColumnMissingError(", ".join(HEADER_NAMES))

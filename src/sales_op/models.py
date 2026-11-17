@@ -61,6 +61,21 @@ class SalesOpSpecification:
 
 
 @dataclass(frozen=True, slots=True)
+class SalesOpRunOptions:
+    """
+    CLI run options for the month-folder loader.
+
+    ``months is None`` selects the current month from the application
+    timezone; ``all_months`` selects every ``YYYY-MM`` folder under
+    ``data_dir``. ``force`` includes files whose name starts with ``_``.
+    """
+
+    force: bool = False
+    months: tuple[date, ...] | None = None
+    all_months: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class SelectedSalesOpFile:
     source_code: str
     path: Path

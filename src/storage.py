@@ -97,6 +97,35 @@ async def align_table_structure(connection: AsyncConnection, table: Table) -> No
     await _ensure_unique_constraints(connection, table)
 
 
+async def ensure_additive_table_structure(connection: AsyncConnection, table: Table) -> None:
+    """
+    Create the schema/table when missing and add only the missing columns.
+
+    Month-partitioned loaders replace one month's rows and must not rewrite the
+    whole table, so this variant never drops or alters an existing column: a
+    legacy table keeps its extra columns, which get their DEFAULT or NULL on
+    insert. A missing NOT NULL column can be added only when it has a server
+    default or the table is still empty; otherwise it is added as nullable and
+    the loader keeps supplying the value for new rows.
+    """
+    await _ensure_schema_exists(connection, table)
+    await _ensure_table_exists(connection, table)
+    existing_columns = await _fetch_existing_columns(connection, table)
+    table_has_rows = bool(
+        await connection.scalar(
+            text(f"SELECT EXISTS(SELECT 1 FROM {qualified_table_name(table)})"),  # noqa: S608  # quoted identifier
+        ),
+    )
+    for column in table.columns:
+        if column.name in existing_columns:
+            continue
+        not_null = not column.nullable and (not table_has_rows or column.server_default is not None)
+        column_definition = _additive_column_definition(column, not_null=not_null)
+        await connection.execute(
+            text(f"ALTER TABLE {qualified_table_name(table)} ADD COLUMN {column_definition}"),
+        )
+
+
 async def _drop_retired_columns(
     connection: AsyncConnection,
     table: Table,
@@ -272,4 +301,17 @@ async def _ensure_columns(
 
 def _column_definition(column: Column[Any]) -> str:
     nullability = "" if column.nullable else " NOT NULL"
-    return f"{quote_identifier(column.name)} {column_ddl_type(column)}{nullability}"
+    return f"{quote_identifier(column.name)} {column_ddl_type(column)}{_server_default_sql(column)}{nullability}"
+
+
+def _additive_column_definition(column: Column[Any], *, not_null: bool) -> str:
+    nullability = " NOT NULL" if not_null else ""
+    return f"{quote_identifier(column.name)} {column_ddl_type(column)}{_server_default_sql(column)}{nullability}"
+
+
+def _server_default_sql(column: Column[Any]) -> str:
+    server_default = column.server_default
+    if server_default is None:
+        return ""
+    argument = getattr(server_default, "arg", None)
+    return "" if argument is None else f" DEFAULT {argument}"

@@ -27,6 +27,7 @@ SOURCE_TABLE_ROW = 8
 SOURCE_FILE_MASK_ROW = 7
 TABLE_SCHEMA_PREFIX = "el."
 TABLE_NAME_PREFIX = "sales_op_"
+PLAN_DATE_COLUMN_NAME = "doc_yearmonth"
 VALID_TARGET_NAME_PATTERN = re.compile(r"^[a-z_][a-z0-9_]*$")
 TYPE_MAPPING: dict[str, ColumnKind] = {
     "date": "date",
@@ -202,7 +203,7 @@ def _build_mapping(
     row_number: int,
     required: bool,
 ) -> SalesOpColumnMapping:
-    if column.name == "doc_yearmonth":
+    if column.name == PLAN_DATE_COLUMN_NAME:
         return SalesOpColumnMapping(column, description, "plan_date", required=required)
     normalized = normalize_excel_header(source_expression)
     if not normalized or normalized == "null":

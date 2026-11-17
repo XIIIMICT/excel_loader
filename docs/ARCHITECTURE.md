@@ -1,6 +1,6 @@
 # Architecture (shared engine, config, sources, storage)
 
-An Excel-to-PostgreSQL loader: the `el-loader` container (`compose.yaml`, `Dockerfile`) runs `python src/main.py` once, replaces the target tables' data, then exits. PostgreSQL and Loki are external services; they are started inside this project only for local debugging (`just db-standalone`, `just logging-standalone`).
+An Excel-to-PostgreSQL loader: the `el-loader` container (`compose.yaml`, `Dockerfile`) runs `python src/main.py` once, replaces the target tables' data (sales_op — only the selected months), then exits. PostgreSQL and Loki are external services; they are started inside this project only for local debugging (`just db-standalone`, `just logging-standalone`).
 
 ```
 loader (src/main.py)
@@ -11,16 +11,16 @@ loader (src/main.py)
   └── _push_run_outcome_metrics run gauges to the Pushgateway (opt-in)
         │
         ├── PostgreSQL (asyncpg/SQLAlchemy) — target tables + el.excel_loader_sources_history
-        └── sources: local (data_dir) or imap (email attachments)
+        └── sources: local (data_dir) or imap (email attachments; sales_op is local-only)
 ```
 
 ## Execution order and exit code
 
 `src/main.py`:
 
-1. `load_settings()` reads `config.toml`, applies CLI overrides (`--source`).
+1. `load_settings()` reads `config.toml`, applies CLI overrides (`--source`, plus sales_op-only `--force`/`--months`).
 2. `configure_logging()` creates `logs/<timestamp>.log` (JSON Lines).
-3. Modules run in a fixed order: `quotes_nsi`, `quotes`, `pd`, `sales_op` (`_selected_modules`). Selection: repeated `--module <code>` unioned with the legacy `--quotes-nsi`/`--quotes`/`--pd`/`--sales-op` flags; with no selection — all four.
+3. Modules run in a fixed order: `quotes_nsi`, `quotes`, `pd`, `sales_op` (`_selected_modules`). Selection: repeated `--module <code>` unioned with the legacy `--quotes-nsi`/`--quotes`/`--pd`/`--sales-op` flags; with no selection — all four. `--force` and `--months` are sales_op-only; with `sales_op` not selected the CLI exits with code `2` before loading.
 4. Module post-actions: `USAGE` on the schema, `SELECT` on tables/relations, `REFRESH MATERIALIZED VIEW`. A module with errors (`has_errors`) skips its post-actions.
 5. Common post-actions (`[[common.post_actions]]`) run against the run outcome from `_module_run_outcome`: `success`, `partial_success` or `failure`; each action is selected by its own `run_on` (`always` also counts).
 6. Run metrics are pushed to the Pushgateway when `METRICS_PUSHGATEWAY_URL` is set (see "Logs, metrics and alerts"). The loader itself sends no e-mail: error reports are delivered by the Alertmanager of the monitoring stack, which reacts to the pushed metrics — if the stack is unreachable, the failed push is logged (`ERROR`) to the run log file and no e-mail goes out.
@@ -49,7 +49,7 @@ Exit code `0` only when no module has errors/format changes and no post-action f
 
 Local mode: `data_dir` must exist, files are matched with `fullmatch` against `file_pattern` (default from the loader) and sorted by name (casefold). A missing required file is a `SourceError`.
 
-IMAP mode: `IMAP4_SSL`, `common.imap.*`, the last `scan_depth` messages are scanned (in reverse); the subject is checked by `imap_subject_pattern.search`, attachments by `file_pattern.fullmatch` against the decoded name. Attachments are downloaded into a temp directory; `SourceFile.history_reference` for them is `imap/<original_name>`, else the file path. `SourceAuthError` — connection/authentication problems.
+IMAP mode: `IMAP4_SSL`, `common.imap.*`, the last `scan_depth` messages are scanned (in reverse); the subject is checked by `imap_subject_pattern.search`, attachments by `file_pattern.fullmatch` against the decoded name. Attachments are downloaded into a temp directory; `SourceFile.history_reference` for them is `imap/<original_name>`, else the file path. `SourceAuthError` — connection/authentication problems. `sales_op` does not use IMAP: its runner rejects a non-local source and walks local `YYYY-MM` month folders instead.
 
 "Not found" rules:
 - a single dictionary — `WARNING` and skip (`warning_files`), not an error;
@@ -114,6 +114,7 @@ Errors and warnings must point at the real cell in the source workbook, not at a
 - Types by `ColumnKind`: `text` → `TEXT`, `bool` → `BOOLEAN`, `date` → `DATE`, `datetime` → `TIMESTAMP`, `timestamp_tz` → `TIMESTAMPTZ`, `float` → `DOUBLE PRECISION`, `int` → `INTEGER`.
 - `prepare_storage`: create the schema (`CREATE SCHEMA IF NOT EXISTS`), grant `USAGE` and `SELECT` to existing roles (`users_to_grant`), create the table if missing. The grants run through the shared connection-level helpers `grant_usage_on_schema` / `grant_select_on_table` (role-filtered via `POSTGRES_ROLE_EXISTS_SQL` in `storage.py`); table creation is an unconditional idempotent `create_all`.
 - `replace_table_rows`: in one transaction `TRUNCATE` the target table → `align_table_structure` → insert rows → write source-history rows. Target tables are **replaced wholesale**, not appended to.
+- `sales_op` uses the month-partitioned path instead (`sales_op/db.py: replace_month_rows`): `ensure_additive_table_structure` (create the table if missing, add only missing columns) → `DELETE` by the `doc_yearmonth` range → insert → history, all in one transaction. Existing columns are never dropped or altered; `created_at TIMESTAMPTZ NOT NULL DEFAULT now()` is the only extra physical column.
 - `align_table_structure`: add missing columns, change type (`USING cast`), fix nullability, create/verify the PK, create missing single-column `UNIQUE` constraints; drop "retired" columns (`user_name`, `date_upload`, `date_modified`, plus `source_report_name` for `quotes_nsi_sources`).
 - A mismatch between the existing PK and the expected one, or a PK where none is expected, is a `DatabaseOperationError`. A PK `IntegrityError` during insert is a `DuplicatePrimaryKeyError`.
 - DDL must stay compatible with PostgreSQL 14: no `UNIQUE NULLS NOT DISTINCT` or features newer than 14.

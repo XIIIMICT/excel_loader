@@ -24,7 +24,8 @@ from postgres import (
     grant_usage_on_schema_to_existing_roles,
     refresh_existing_materialized_views,
 )
-from sales_op.runner import run_sales_op
+from sales_op.models import SalesOpRunOptions
+from sales_op.runner import parse_sales_op_options, run_sales_op
 
 if TYPE_CHECKING:
     from sqlalchemy import Table
@@ -71,18 +72,28 @@ def main() -> int:
     args = _build_parser().parse_args()
     try:
         settings = _apply_cli_overrides(load_settings(), args=args)
+        sales_op_options = _sales_op_run_options(args)
     except ValueError as error:
         sys.stderr.write(f"{error}\n")
         return 2
 
     started_at = datetime.now(tz=settings.app_timezone)
     configure_logging(settings, started_at)
-    return asyncio.run(_run_app(settings, args=args))
+    return asyncio.run(_run_app(settings, args=args, sales_op_options=sales_op_options))
 
 
-async def _run_app(settings: Settings, *, args: argparse.Namespace) -> int:
+async def _run_app(
+    settings: Settings,
+    *,
+    args: argparse.Namespace,
+    sales_op_options: SalesOpRunOptions | None = None,
+) -> int:
     run_started_at = time.monotonic()
-    module_runs = await _run_modules(settings, _selected_modules(args))
+    module_runs = await _run_modules(
+        settings,
+        _selected_modules(args),
+        sales_op_options=sales_op_options,
+    )
     post_action_failed_modules = await _run_post_actions(settings, module_runs)
     outcome = _module_run_outcome(module_runs, post_action_failed_modules=post_action_failed_modules)
     common_post_action_failed = await _run_common_post_actions(settings, outcome=outcome)
@@ -180,7 +191,11 @@ def _sql_string_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def _module_entries(settings: Settings) -> tuple[ModuleEntry, ...]:
+def _module_entries(
+    settings: Settings,
+    *,
+    sales_op_options: SalesOpRunOptions | None = None,
+) -> tuple[ModuleEntry, ...]:
     """
     Return the module registry, one entry per module, ordered as modules run.
 
@@ -188,6 +203,11 @@ def _module_entries(settings: Settings) -> tuple[ModuleEntry, ...]:
     ``ModuleOutcome``. ``_run_modules`` consumes this tuple and never needs
     editing for a new module.
     """
+    options = sales_op_options or SalesOpRunOptions()
+
+    async def sales_op_runner(runner_settings: Settings) -> ModuleOutcome:
+        return await run_sales_op(runner_settings, options=options)
+
     return (
         ModuleEntry(
             code="quotes_nsi",
@@ -215,13 +235,18 @@ def _module_entries(settings: Settings) -> tuple[ModuleEntry, ...]:
             schema_name=settings.modules["sales_op"].schema_name,
             materialized_views=settings.modules["sales_op"].materialized_views,
             grant_users=settings.modules["sales_op"].users_to_grant,
-            runner=run_sales_op,
+            runner=sales_op_runner,
         ),
     )
 
 
-async def _run_modules(settings: Settings, modules: tuple[str, ...]) -> tuple[ModuleRun, ...]:
-    entries = {entry.code: entry for entry in _module_entries(settings)}
+async def _run_modules(
+    settings: Settings,
+    modules: tuple[str, ...],
+    *,
+    sales_op_options: SalesOpRunOptions | None = None,
+) -> tuple[ModuleRun, ...]:
+    entries = {entry.code: entry for entry in _module_entries(settings, sales_op_options=sales_op_options)}
     module_runs: list[ModuleRun] = []
     for code in modules:
         entry = entries[code]
@@ -433,6 +458,18 @@ def _apply_cli_overrides(settings: Settings, *, args: argparse.Namespace) -> Set
     return settings.model_copy(update={"modules": modules})
 
 
+def _sales_op_run_options(args: argparse.Namespace) -> SalesOpRunOptions | None:
+    """Parse the sales_op-only flags; ``None`` means the default (current month)."""
+    force = bool(getattr(args, "force", False))
+    months = getattr(args, "months", None)
+    if not force and months is None:
+        return None
+    if "sales_op" not in _selected_modules(args):
+        msg = "Флаги --force и --months применимы только к модулю sales_op."
+        raise ValueError(msg)
+    return parse_sales_op_options(force=force, months=months)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Загрузка НСИ котировок, котировок, ПД и плана продаж.")
     parser.add_argument(
@@ -450,6 +487,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "--source",
         choices=("local", "imap"),
         help="Переопределить источник для выбранных модулей.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="План продаж: загрузить и файлы месяца, начинающиеся с «_».",
+    )
+    parser.add_argument(
+        "--months",
+        metavar="МЕСЯЦЫ",
+        help="План продаж: папки месяцев через запятую (2026-01,2026-02) или all.",
     )
     return parser
 

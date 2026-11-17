@@ -16,6 +16,7 @@ stub entries so no PostgreSQL/IMAP access is needed.
 
 import argparse
 import asyncio
+from datetime import date
 
 import pytest
 
@@ -27,9 +28,11 @@ from main import (
     ModuleRunner,
     _build_parser,
     _run_app,
+    _sales_op_run_options,
     _selected_modules,
 )
 from module_models import ModuleOutcome
+from sales_op.models import SalesOpRunOptions
 
 CODES = ("quotes_nsi", "quotes")
 
@@ -92,7 +95,7 @@ def _run_app_with_matrix(
         ModuleEntry(code=code, schema_name="raw", materialized_views=(), grant_users=(), runner=_stub_runner(outcome))
         for code, outcome in zip(CODES, outcomes, strict=True)
     )
-    monkeypatch.setattr("main._module_entries", lambda _settings: entries)
+    monkeypatch.setattr("main._module_entries", lambda _settings, **_kwargs: entries)
     monkeypatch.setattr("main._run_post_actions", fake_run_post_actions)
     monkeypatch.setattr("main._run_common_post_actions", fake_run_common_post_actions)
     monkeypatch.setattr("main._push_run_outcome_metrics", fake_push_run_outcome_metrics)
@@ -203,3 +206,31 @@ def test_unknown_module_name_is_rejected_by_argparse() -> None:
         _parsed(["--module", "nope"])
 
     assert raised.value.code == 2
+
+
+# --
+# sales_op run options: --force/--months are sales_op-only and validated
+# before any module runs.
+
+
+def test_force_and_months_require_sales_op() -> None:
+    with pytest.raises(ValueError, match="sales_op"):
+        _sales_op_run_options(_parsed(["--pd", "--force"]))
+
+    with pytest.raises(ValueError, match="sales_op"):
+        _sales_op_run_options(_parsed(["--module", "quotes", "--months", "2026-01"]))
+
+
+def test_sales_op_flags_are_parsed_into_run_options() -> None:
+    options = _sales_op_run_options(_parsed(["--sales-op", "--months", "2026-02,2026-01", "--force"]))
+
+    assert options == SalesOpRunOptions(force=True, months=(date(2026, 2, 1), date(2026, 1, 1)))
+
+
+def test_no_sales_op_flags_means_default_month() -> None:
+    assert _sales_op_run_options(_parsed(["--sales-op"])) is None
+
+
+def test_invalid_month_is_rejected_before_loading() -> None:
+    with pytest.raises(ValueError, match="--months"):
+        _sales_op_run_options(_parsed(["--sales-op", "--months", "2026-13"]))

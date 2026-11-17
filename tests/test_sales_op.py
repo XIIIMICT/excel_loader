@@ -1,20 +1,26 @@
-import logging
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import pytest
 from openpyxl import Workbook
 
-from dictionary_models import WorkbookMetadata
 from excel_parser import convert_excel_value
+from sales_op.db import _next_month_start, _source_select, build_sales_op_table
 from sales_op.excel_parser import _bind_source_columns, parse_sales_op_workbook
-from sales_op.models import SelectedSalesOpFile
-from sales_op.runner import _mark_processed_files
+from sales_op.models import SalesOpError, SalesOpRunOptions
+from sales_op.runner import (
+    _collect_month_files,
+    _parse_selected_files,
+    _select_month_folders,
+    _select_source_files,
+    parse_sales_op_options,
+)
 from sales_op.specification import SPECIFICATION_FILE_NAME, _read_sources, read_sales_op_specification
-from source_resolver import _is_processed_sales_op_file, _resolve_folder_sources_by_pattern
+from source_resolver import SourceFile, _resolve_folder_sources_by_pattern
 
 if TYPE_CHECKING:
-    import pytest
+    from config import Settings
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 MOCK_SALES_OP_DIR = PROJECT_DIR / "mock_data" / "sales_op"
@@ -128,11 +134,11 @@ class TestSalesOpSpecification:
         assert all("user_name" not in row for row in parsed.rows)
 
 
-def _synthetic_plan(path: Path) -> None:
+def _synthetic_plan(path: Path, plan_date: str = "2026-07-01") -> None:
     workbook = Workbook()
     sheet = workbook.active
     sheet["A1"] = "План продаж :"
-    sheet["B1"] = "2026-07-01"
+    sheet["B1"] = plan_date
     headers = (
         "Производитель",
         "Продавец",
@@ -147,6 +153,14 @@ def _synthetic_plan(path: Path) -> None:
     sheet.append(("P1", "S1", "G1", None, 20, None))  # empty client -> skipped
     sheet.append((None,) * len(headers))  # fully blank -> stop
     sheet.append(("P2", "S2", "G2", "Client B", 30, None))  # must not be read
+    workbook.save(path)
+
+
+def _plan_without_headers(path: Path, plan_date: str) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet["A1"] = "План продаж :"
+    sheet["B1"] = plan_date
     workbook.save(path)
 
 
@@ -165,7 +179,7 @@ def test_skips_rows_without_client_name_and_stops_at_blank_row(tmp_path: Path) -
     assert parsed.rows[0]["producer_code"] == "P1"
 
 
-def test_resolve_folder_sources_skips_underscore_prefixed_files(tmp_path: Path) -> None:
+def test_resolve_folder_sources_finds_underscore_prefixed_files(tmp_path: Path) -> None:
     (tmp_path / "plan.xlsx").write_bytes(b"")
     (tmp_path / "_processed_plan.xlsx").write_bytes(b"")
 
@@ -173,65 +187,185 @@ def test_resolve_folder_sources_skips_underscore_prefixed_files(tmp_path: Path) 
         data_dir=tmp_path,
         file_pattern=r".*\.xlsx$",
         allow_empty=True,
-        skip_processed_sales_op_files=True,
     )
 
-    assert [source.path.name for source in sources] == ["plan.xlsx"]
-    assert _is_processed_sales_op_file("_processed_plan.xlsx")
+    # The underscore is a sales_op marker, not a general source filter.
+    assert [source.path.name for source in sources] == ["_processed_plan.xlsx", "plan.xlsx"]
 
-    # Other modules must not inherit the sales_op-specific marker filter.
-    unfiltered = _resolve_folder_sources_by_pattern(
-        data_dir=tmp_path,
-        file_pattern=r".*\.xlsx$",
-        allow_empty=True,
+
+class TestSalesOpOptions:
+    def test_default_options_select_the_current_month(self) -> None:
+        assert parse_sales_op_options(force=False, months=None) == SalesOpRunOptions()
+
+    def test_force_is_kept(self) -> None:
+        assert parse_sales_op_options(force=True, months=None) == SalesOpRunOptions(force=True)
+
+    def test_months_list_is_validated_and_deduplicated(self) -> None:
+        options = parse_sales_op_options(force=True, months="2026-02, 2026-01,2026-02")
+
+        assert options == SalesOpRunOptions(force=True, months=(date(2026, 2, 1), date(2026, 1, 1)))
+
+    def test_all_months_label_is_case_insensitive(self) -> None:
+        assert parse_sales_op_options(force=False, months="ALL") == SalesOpRunOptions(all_months=True)
+
+    @pytest.mark.parametrize("months", ["", "2026-13", "2026-1", "2026-01-01", "all,2026-01", "0000-01"])
+    def test_invalid_months_are_rejected(self, months: str) -> None:
+        with pytest.raises(ValueError, match="--months"):
+            parse_sales_op_options(force=False, months=months)
+
+
+class TestMonthFolders:
+    def test_missing_requested_month_folder_is_an_error(self, tmp_path: Path) -> None:
+        with pytest.raises(SalesOpError, match="папка месяца не найдена"):
+            _select_month_folders(
+                tmp_path,
+                options=SalesOpRunOptions(months=(date(2026, 1, 1),)),
+                timezone=UTC,
+            )
+
+    def test_all_months_lists_existing_month_folders(self, tmp_path: Path) -> None:
+        (tmp_path / "2026-07").mkdir()
+        (tmp_path / "2026-06").mkdir()
+        (tmp_path / "notes").mkdir()
+
+        assert _select_month_folders(
+            tmp_path,
+            options=SalesOpRunOptions(all_months=True),
+            timezone=UTC,
+        ) == (date(2026, 6, 1), date(2026, 7, 1))
+
+    def test_all_months_requires_at_least_one_folder(self, tmp_path: Path) -> None:
+        with pytest.raises(SalesOpError, match="не найдены папки месяцев"):
+            _select_month_folders(
+                tmp_path,
+                options=SalesOpRunOptions(all_months=True),
+                timezone=UTC,
+            )
+
+    def test_current_month_comes_from_the_application_timezone(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        class _FixedDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):  # noqa: ANN001, ANN206
+                return datetime(2026, 2, 15, tzinfo=tz)
+
+        monkeypatch.setattr("sales_op.runner.datetime", _FixedDatetime)
+        (tmp_path / "2026-02").mkdir()
+
+        assert _select_month_folders(
+            tmp_path,
+            options=SalesOpRunOptions(),
+            timezone=UTC,
+        ) == (date(2026, 2, 1),)
+
+
+def _settings_with_data_dir(settings: Settings, data_dir: Path) -> Settings:
+    module = settings.modules["sales_op"].model_copy(
+        update={"sources": settings.modules["sales_op"].sources.model_copy(update={"data_dir": data_dir})},
     )
-    assert [source.path.name for source in unfiltered] == ["_processed_plan.xlsx", "plan.xlsx"]
+    modules = dict(settings.modules)
+    modules["sales_op"] = module
+    return settings.model_copy(update={"modules": modules})
 
 
-def _selected_file(path: Path, source_code: str = "mfk") -> SelectedSalesOpFile:
-    moment = datetime(2026, 7, 25, tzinfo=UTC)
-    return SelectedSalesOpFile(
-        source_code=source_code,
-        path=path,
-        display_name=str(path),
-        original_name=path.name,
-        plan_date=date(2026, 7, 1),
-        modified_at=moment,
-        metadata=WorkbookMetadata("tester", moment, moment),
-        history_reference=str(path),
+def _source_file(path: Path) -> SourceFile:
+    return SourceFile(path=path, display_name=str(path), original_name=path.name)
+
+
+def test_collect_month_files_skips_underscore_without_force(tmp_path: Path, settings: Settings) -> None:
+    month_dir = tmp_path / "2026-07"
+    month_dir.mkdir()
+    (month_dir / "plan.xlsx").write_bytes(b"")
+    (month_dir / "_processed.xlsx").write_bytes(b"")
+    test_settings = _settings_with_data_dir(settings, tmp_path)
+    module = test_settings.modules["sales_op"]
+
+    without_force = _collect_month_files(
+        test_settings,
+        module=module,
+        month_folders=(date(2026, 7, 1),),
+        force=False,
+    )
+    assert [source.path.name for _month, files in without_force for source in files] == ["plan.xlsx"]
+
+    with_force = _collect_month_files(
+        test_settings,
+        module=module,
+        month_folders=(date(2026, 7, 1),),
+        force=True,
+    )
+    assert [source.path.name for _month, files in with_force for source in files] == ["_processed.xlsx", "plan.xlsx"]
+
+
+def test_month_mismatch_blocks_only_that_source_group(tmp_path: Path) -> None:
+    specification = read_sales_op_specification(MOCK_SALES_OP_DIR / SPECIFICATION_FILE_NAME)
+    month_start = date(2026, 7, 1)
+    good_path = tmp_path / "МФК_Поклиентный план_Рейтинг_июль.xlsx"
+    wrong_path = tmp_path / "БСК_Полимеры_Поклиентный план_июль.xlsx"
+    _synthetic_plan(good_path, "2026-07-01")
+    _synthetic_plan(wrong_path, "2026-08-01")
+
+    selection = _select_source_files(
+        ((month_start, (_source_file(good_path), _source_file(wrong_path))),),
+        specification_sources=specification.sources,
+        timezone=UTC,
     )
 
-
-def test_mark_processed_files_renames_only_loaded_sources(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    loaded = tmp_path / "loaded.xlsx"
-    other = tmp_path / "other.xlsx"
-    loaded.write_bytes(b"")
-    other.write_bytes(b"")
-
-    with caplog.at_level(logging.INFO, logger="excel_loader"):
-        warnings = _mark_processed_files(
-            (_selected_file(loaded), _selected_file(other, source_code="bsk_soda")),
-            loaded_source_codes={"mfk"},
-        )
-
-    assert warnings == 0
-    assert not loaded.exists()
-    assert (tmp_path / "_loaded.xlsx").exists()
-    assert other.exists(), "a source whose table was not loaded must be retried next run"
+    assert set(selection.files_by_group) == {("mfk", month_start)}
+    assert selection.failed_groups == frozenset({("bsk_polymers", month_start)})
+    assert selection.failures == 1
 
 
-def test_mark_processed_files_warns_when_rename_fails(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    loaded = tmp_path / "loaded.xlsx"
-    loaded.write_bytes(b"")
-    target = tmp_path / "_loaded.xlsx"
-    target.mkdir()  # rename onto an existing directory fails
+def test_parse_failure_of_one_file_blocks_the_whole_source_month(tmp_path: Path) -> None:
+    specification = read_sales_op_specification(MOCK_SALES_OP_DIR / SPECIFICATION_FILE_NAME)
+    month_start = date(2026, 7, 1)
+    good_path = tmp_path / "БСК_Полимеры_план_01.07.xlsx"
+    broken_path = tmp_path / "БСК_Полимеры_план_02.07.xlsx"
+    _synthetic_plan(good_path, "2026-07-01")
+    _plan_without_headers(broken_path, "2026-07-02")
 
-    with caplog.at_level(logging.WARNING, logger="excel_loader"):
-        warnings = _mark_processed_files(
-            (_selected_file(loaded),),
-            loaded_source_codes={"mfk"},
-        )
+    selection = _select_source_files(
+        ((month_start, (_source_file(good_path), _source_file(broken_path))),),
+        specification_sources=specification.sources,
+        timezone=UTC,
+    )
+    parsed = _parse_selected_files(
+        selection.files_by_group,
+        failed_groups=selection.failed_groups,
+        specification_sources=specification.sources,
+    )
 
-    assert warnings == 1
-    assert loaded.exists()
-    assert any("не удалось переименовать" in record.getMessage() for record in caplog.records)
+    assert selection.files_by_group[("bsk_polymers", month_start)]
+    assert parsed.rows_by_group == {}
+    assert parsed.failures == 1
+
+
+def test_sales_op_table_gets_created_at_with_a_database_default(settings: Settings) -> None:
+    specification = read_sales_op_specification(MOCK_SALES_OP_DIR / SPECIFICATION_FILE_NAME)
+
+    table = build_sales_op_table(
+        table_reference=settings.modules["sales_op"].table_reference("sales_op_mfk"),
+        columns=specification.sources["mfk"].table_columns,
+    )
+
+    created_at = table.c["created_at"]
+    assert created_at.nullable is False
+    assert created_at.server_default is not None
+    default_argument = getattr(created_at.server_default, "arg", None)
+    assert str(default_argument) == "now()"
+
+
+def test_view_projection_exposes_created_at_last(settings: Settings) -> None:
+    specification = read_sales_op_specification(MOCK_SALES_OP_DIR / SPECIFICATION_FILE_NAME)
+
+    select = _source_select(settings, specification, source_code="mfk")
+
+    assert '"created_at" AS "created_at"\nFROM "el"."sales_op_mfk"' in select
+
+
+def test_next_month_start_crosses_the_year_boundary() -> None:
+    assert _next_month_start(date(2026, 7, 1)) == date(2026, 8, 1)
+    assert _next_month_start(date(2026, 12, 1)) == date(2027, 1, 1)

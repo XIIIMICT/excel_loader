@@ -1,0 +1,31 @@
+# Внешние для приложения сервисы данных: PostgreSQL (в excel_loader — только
+# Postgres; Keycloak и Valkey есть только в ReportCollector). Запускается
+# отдельно от приложения через `just db-stand`.
+#
+# Приложение рассчитано на внешний PostgreSQL и Loki, поэтому эти контейнеры
+# не должны запускаться вместе с ним. Keycloak и Valkey есть только в
+# ReportCollector (compose.db.yaml и compose.auth.yaml); наблюдательный стек
+# (alloy + loki/grafana/prometheus/alertmanager) — в compose.monitoring.yaml.
+
+services:
+  postgres:
+    container_name: el-postgres
+    image: postgres:18-alpine
+    restart: unless-stopped
+    # Compose читает эти значения из .env; настройки приложения остаются в config.toml.
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?Нужно указать POSTGRES_USER в окружении или .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Нужно указать POSTGRES_PASSWORD в окружении или .env}
+      POSTGRES_DB: ${POSTGRES_DB:?Нужно указать POSTGRES_DB в окружении или .env}
+    volumes: [postgres-data:/var/lib/postgresql/data]
+    networks: [net]
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres-data:
+    name: el-postgres-data

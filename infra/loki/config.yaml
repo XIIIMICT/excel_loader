@@ -36,12 +36,15 @@ schema_config:
 limits_config:
   allow_structured_metadata: true
   volume_enabled: true
-  # Retention must be set here AND the compactor below must be enabled:
-  # without the compactor the setting is inert and chunks are kept forever.
-  # 7 days matches the dashboards (compare today against last week).
+  # Retention was never set, which in Loki means "keep forever" (~175 MB/day of
+  # application logs accumulate on the volume). 7 days matches what the
+  # dashboards ask for (compare today against last week) and is what the
+  # rotated file logs can no longer hold.
   retention_period: 168h
 
 compactor:
+  # The compactor is what actually ENFORCES `retention_period`; without it the
+  # setting is inert and chunks are never deleted.
   working_directory: /loki/compactor
   delete_request_store: filesystem
   retention_enabled: true

@@ -1,22 +1,24 @@
 #!/bin/sh
-# Рендерит `alertmanager.yml` с SMTP-значениями из окружения.
+# Render `alertmanager.yml` with the SMTP values from the environment.
 #
-# Почему не `--setenv`: Alertmanager подставляет ${VAR} только в *_file-полях,
-# НЕ в `to`/`smarthost`. envsubst в образе нет, поэтому подстановка — sed
-# ровно по плейсхолдерам этого шаблона.
+# Why not `--setenv`: Alertmanager expands `${VAR}` only in `*_file` paths and a
+# few fields, NOT in `to`/`smarthost` — a config that relies on it starts and
+# silently sends nowhere. `envsubst` is not in the image either, so the
+# substitution is done with `sed` over the exact placeholders this file uses.
 #
-# Отсутствие значения — жёсткая гарантия остановки: иначе Alertmanager
-# стартует с пустым получателем, и казалось бы настроенная почта молчит.
-
+# A missing value is a hard error: Alertmanager would otherwise boot with an
+# empty recipient and we would believe mail is configured.
 set -eu
 
-: "${SUPPORT_MAIL:?SUPPORT_MAIL не задана — у алертов нет получателя (см. .env.example)}"
-: "${ALERT_SMTP_FROM:?ALERT_SMTP_FROM не задано}"
-: "${ALERT_SMTP_SMARTHOST:?ALERT_SMTP_SMARTHOST не задано}"
-: "${ALERT_SMTP_USER:?ALERT_SMTP_USER не задано}"
-: "${ALERT_SMTP_PASSWORD:?ALERT_SMTP_PASSWORD не задано}"
+: "${SUPPORT_MAIL:?SUPPORT_MAIL is not set — alert mail has no recipient}"
+: "${ALERT_SMTP_FROM:?ALERT_SMTP_FROM is not set}"
+: "${ALERT_SMTP_SMARTHOST:?ALERT_SMTP_SMARTHOST is not set}"
+: "${ALERT_SMTP_USER:?ALERT_SMTP_USER is not set}"
+: "${ALERT_SMTP_PASSWORD:?ALERT_SMTP_PASSWORD is not set}"
 
-# Разделитель `|`: в паролях бывают `/` и `@`.
+# `|` as the delimiter: passwords routinely contain `/` and `@`.
+# The values are sed-replacement-safe because they are validated above and come
+# from `.env`, not from a request.
 sed \
   -e "s|\${SUPPORT_MAIL}|${SUPPORT_MAIL}|g" \
   -e "s|\${ALERT_SMTP_FROM}|${ALERT_SMTP_FROM}|g" \

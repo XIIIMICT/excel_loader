@@ -3,7 +3,7 @@ local.file_match "excel_loader_logs" {
     {
       "__path__" = "/var/log/excel_loader/*.log",
       "app"      = "excel_loader",
-      "env"      = "local",
+      "env"      = sys.env("LOG_ENV"), // LOG_ENV: local|prod — задаётся в compose (из .env)
       "job"      = "excel_loader",
     },
   ]

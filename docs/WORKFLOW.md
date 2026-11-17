@@ -4,13 +4,13 @@
 
 Python 3.15 (`requires-python = "==3.15.*"` — a deliberate pin: the production image runs `PYTHON_VERSION=3.15` and the dev venv is 3.15.0, so the pin guarantees `uv sync --locked` resolves identically everywhere; widening it is a decision to make together with a version bump, not a linter suggestion), package manager and runner — **uv**. The app runs in Docker Compose (`el-loader`); PostgreSQL and Loki are external services.
 
-1. Config: copy `config.example.toml` to `config.toml` and fill in PostgreSQL/IMAP. `.env` is needed by Compose for container variables (Loki, monitoring stack, optionally standalone Postgres/Grafana) and does **not** replace `config.toml`.
+1. Config: copy `config.example.toml` to `config.toml` and fill in PostgreSQL/IMAP. `.env` is needed by Compose for container variables (Loki, monitoring stack, optionally Postgres) and does **not** replace `config.toml`.
 2. Dependencies: `just deps` (`uv sync`).
 3. Run the CLI in Compose: `just loader --pd --source local` (image build — `just loader-build …`).
-4. External services for standalone: `just db-standalone` (Postgres), `just logging-standalone` (Loki + Grafana + Alloy), `just logging` (Alloy only), `just monitoring` (full observability: also Pushgateway + Prometheus + Alertmanager; alert e-mail is rendered from `.env` at container start).
+4. External services for local: `just db-stand` (Postgres), `just monitoring-stand` (Loki + Grafana + Alloy + Pushgateway + Prometheus + Alertmanager; alert e-mail is rendered from `.env` at container start).
 5. Seed PD reference data: `just seed`.
 
-`POSTGRES_HOST` (when set) overrides `common.postgres.host`; `compose.yaml` mounts `./config.toml` to `/app/config.toml`. Stop the environment with `just down-standalone`, full cleanup (with volumes) with `just clean`.
+`POSTGRES_HOST` (when set) overrides `common.postgres.host`; `compose.yaml` mounts `./config.toml` to `/app/config.toml`. Stop the environment with `just down`, full cleanup (with volumes) with `just clean`.
 
 ## Quality (what we check before delivery)
 
@@ -42,7 +42,7 @@ Write files as **UTF-8 without BOM**, line endings LF. prek (`mixed-line-ending 
 `.github/workflows/`:
 
 - `ci.yaml` — the single CI entry point (PRs/pushes to `main`/`dev`, manual dispatch, reusable via `workflow_call`).
-  - `config` — actionlint plus `docker compose --profile standalone config --quiet` validation.
+  - `config` — actionlint plus `docker compose config --quiet` validation.
   - `quality` — `uv sync --locked`, `ruff check`, `ruff format --check`, `ty check`.
   - `tests` — `pytest` with branch coverage and JUnit XML; reports uploaded as artifacts. All current tests are pure unit tests, so no database service is required.
   - `dependencies` — PR-only dependency review (`actions/dependency-review-action`, `fail-on-severity: moderate`); fails a PR that introduces a known-vulnerable package.
@@ -103,7 +103,7 @@ Verified: ruff, ty, pytest tests/test_common.py; no DB needed.
 ## Working principles
 
 - **Minimal changes:** edit existing files, don't add new entities without need; follow the file's style.
-- **Verify after changes:** `just check` and `just test`. Changed parsing/mapping — run the corresponding `tests/test_*.py`; changed DDL/grants — check against a local PostgreSQL (`just db-standalone`).
+- **Verify after changes:** `just check` and `just test`. Changed parsing/mapping — run the corresponding `tests/test_*.py`; changed DDL/grants — check against a local PostgreSQL (`just db-stand`).
 - **Documentation is part of the change:** changed behavior, mapping or config — update `AGENTS.md` and the relevant file in `docs/`.
 - **Git hygiene:** a shared repo, foreign edits are possible; don't revert other people's changes.
 - **uv TLS:** verify through the system certificate store (`UV_SYSTEM_CERTS=1` is set in the `justfile`). Don't bring back `UV_INSECURE_HOST`, don't disable SSL globally; the corporate CA is mounted from `/etc/ssl/certs`.

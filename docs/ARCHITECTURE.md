@@ -1,6 +1,7 @@
 # Architecture (shared engine, config, sources, storage)
 
-An Excel-to-PostgreSQL loader: the `el-loader` container (`compose.yaml`, `Dockerfile`) runs `python src/main.py` once, replaces the target tables' data (sales_op — only the selected months), then exits. PostgreSQL and Loki are external services; they are started inside this project only for local debugging (`just db-standalone`, `just logging-standalone`).
+An Excel-to-PostgreSQL loader: the `el-loader` container (`compose.yaml`, `Dockerfile`) runs `python src/main.py` once, replaces the target tables' data (sales_op — only the selected months), then exits. PostgreSQL and Loki are external services; they are started inside this project only for local debugging (`just db-stand`, `just monitoring-stand`).
+
 
 ```
 loader (src/main.py)
@@ -134,8 +135,11 @@ Errors and warnings must point at the real cell in the source workbook, not at a
 ## Logs, metrics and alerts
 
 - `app_logging.py` writes JSON Lines to `logs/<timestamp>.log` (one file per run); the module code is attached to the log (`set_log_module`). At startup the folder is pruned: `.log` files older than `LOG_RETENTION_DAYS = 14` are removed (the folder grows unboundedly otherwise).
+- **Bind-folder ownership on Linux.** `./logs` and `./unloaded_data` on the host belong to the account that deploys the repo, and the image's built-in `appuser` (uid 100) only shrugs at them. The compose file therefore runs the loader as `user: "${HOST_UID:-1000}:${HOST_GID:-1000}"` — set `HOST_UID`/`HOST_GID` in `.env` (`id -u` / `id -g`); on Docker Desktop the values are ignored. If log files from earlier root-run containers already have wrong owners, fix once with `sudo chown -R "$(id -u):$(id -g)" logs unloaded_data`. Do NOT widen permissions (777) — the ownership mapping is the durable fix.
 - The loader sends no e-mail of its own: run reports and error notifications are delivered by the Alertmanager of the monitoring stack (see below). Its own SMTP path (aiosmtplib) was removed together with the `common.smtp` config keys.
-- `compose.yaml` forwards logs to `LOKI_URL` via Alloy; `infra/` holds the Alloy/Loki/Grafana/Prometheus/Alertmanager configs. The external service must be reachable at `LOKI_URL` (for example via a published host port).
+- `compose.yaml` forwards logs to `LOKI_URL` via Alloy; `infra/` holds the Alloy/Loki/Grafana/Prometheus/Alertmanager configs. The external service must be reachable at `LOKI_URL` (for example via a published host port). In the local mode `LOKI_URL=http://loki:3100` resolves by service name inside this very compose project; against the central DWH stack the value becomes `host.docker.internal:3100` (or the server address). The Alloy config stamps every log line with `app=excel_loader`, `job=excel_loader` and `env=<LOG_ENV>` (`LOG_ENV` from `.env`, `local` by default; set `prod` on the server).
+
+**Two modes.** Local single-project (this repo, one compose project): `just monitoring-stand` brings up Loki, Grafana, Alloy, Prometheus, Pushgateway and Alertmanager, `just db-stand` — Postgres; nothing is shared with other projects. Central prod stack (DWH `infra/`): Prometheus/Alertmanager/Pushgateway live there for ALL apps, Loki is shared too, and this repo only runs its own stateless Alloy pushing to the shared `LOKI_URL` (the pushed run metrics go to the central Pushgateway via `METRICS_PUSHGATEWAY_URL`). The shared Loki config (`infra/loki/config.yaml`) and the Alertmanager entrypoint are kept byte-identical between the three stacks; the DWH `infra/check-drift.py` fails on drift.
 - Loki keeps logs 7 days: `infra/loki/config.yaml` sets `retention_period: 168h` **and** enables the `compactor` — without the compactor the retention setting is inert and chunks are never deleted.
 - `infra/alloy/config.alloy` promotes `level`/`module` into labels and keeps `run_id` plus `exception` as Loki structured metadata (queryable, but not labels — a label per run would explode the index). Trace a run end to end: `{job="excel_loader"} | run_id="<run_id>"`.
 
@@ -144,7 +148,7 @@ Errors and warnings must point at the real cell in the source workbook, not at a
 The loader is a batch CLI: it exits, so Prometheus cannot scrape it. When
 `METRICS_PUSHGATEWAY_URL` is set (empty default in `compose.yaml`), the run
 pushes (via `src/metrics.py`) gauges to the Pushgateway
-(`infra/compose.monitoring.yaml`, profile `standalone`): `el_loader_run_status`
+(`infra/compose.monitoring.yaml`): `el_loader_run_status`
 (0 success / 1 partial_success / 2 failure), `el_loader_run_duration_seconds`,
 `el_loader_run_timestamp_seconds`, `el_loader_run_last_success_seconds` (pushed
 only on success — the Pushgateway keeps the previous value, which is what makes
@@ -157,4 +161,4 @@ history. Push failures are logged ERROR and never change the exit code.
 
 - `infra/prometheus/alert-rules.yml`: `ExcelLoaderRunFailed`, `ExcelLoaderLastRunTooOld`, `ExcelLoaderNoSuccessfulRun` (all thresholds assume **daily** runs, 26 h) and `PushgatewayDown` / `PrometheusSelfScrapeDown` for the stack itself. Alertmanager (`infra/alertmanager/`, port 9093) groups them (30 s wait, 4 h repeat) and delivers e-mail; its config is **rendered from `.env` at container start** — edit `ALERT_SMTP_*`/`SUPPORT_MAIL`, then restart the stack. Smarthost must be 587 (STARTTLS); `ALERT_SMTP_USER` must equal the sender mailbox.
 - Grafana (`infra/grafana/`): Loki datasource + Prometheus datasource + the provisioned dashboard `excel-loader-overview` (run status, duration, age of the last successful run, per-module statuses, warnings heatmap, warning/error log panel). Dashboards come from git — edit the JSON, not the browser.
-- `just monitoring` starts the whole observability stack; `just logging` / `just logging-standalone` remain log-only.
+- `just monitoring-stand` starts the whole observability stack (Loki + Grafana + Alloy + Prometheus + Pushgateway + Alertmanager); logs are collected via the same stack.

@@ -20,7 +20,7 @@ loader (src/main.py)
 `src/main.py`:
 
 1. `load_settings()` reads `config.toml`, applies CLI overrides (`--source`, plus sales_op-only `--force`/`--months`).
-2. `configure_logging()` creates `logs/<timestamp>.log` (JSON Lines).
+2. `configure_logging()` creates `logs/<timestamp>.log` (JSON Lines) and configures the console stream.
 3. Modules run in a fixed order: `quotes_nsi`, `quotes`, `pd`, `sales_op` (`_selected_modules`). Selection: repeated `--module <code>` unioned with the legacy `--quotes-nsi`/`--quotes`/`--pd`/`--sales-op` flags; with no selection — all four. `--force` and `--months` are sales_op-only; with `sales_op` not selected the CLI exits with code `2` before loading.
 4. Module post-actions: `USAGE` on the schema, `SELECT` on tables/relations, `REFRESH MATERIALIZED VIEW`. A module with errors (`has_errors`) skips its post-actions.
 5. Common post-actions (`[[common.post_actions]]`) run against the run outcome from `_module_run_outcome`: `success`, `partial_success` or `failure`; each action is selected by its own `run_on` (`always` also counts).
@@ -134,7 +134,7 @@ Errors and warnings must point at the real cell in the source workbook, not at a
 
 ## Logs, metrics and alerts
 
-- `app_logging.py` writes JSON Lines to `logs/<timestamp>.log` (one file per run); the module code is attached to the log (`set_log_module`). At startup the folder is pruned: `.log` files older than `LOG_RETENTION_DAYS = 14` are removed (the folder grows unboundedly otherwise).
+- `app_logging.py` attaches two handlers to the `excel_loader` logger. The `FileHandler` writes JSON Lines to `logs/<timestamp>.log` (one file per run) — this is the machine stream Alloy ships to Loki, so its fields stay stable. The `StreamHandler` writes a human-readable line to stderr (`2026-11-17 12:34:56 INFO     sales_op: …`), with ANSI colors only when stderr is a TTY; redirected output and `docker compose logs` stay plain. The module code is attached to both (`set_log_module`). At startup the folder is pruned: `.log` files older than `LOG_RETENTION_DAYS = 14` are removed (the folder grows unboundedly otherwise).
 - **Bind-folder ownership on Linux.** `./logs` and `./unloaded_data` on the host belong to the account that deploys the repo, and the image's built-in `appuser` (uid 100) only shrugs at them. The compose file therefore runs the loader as `user: "${HOST_UID:-1000}:${HOST_GID:-1000}"` — set `HOST_UID`/`HOST_GID` in `.env` (`id -u` / `id -g`); on Docker Desktop the values are ignored. If log files from earlier root-run containers already have wrong owners, fix once with `sudo chown -R "$(id -u):$(id -g)" logs unloaded_data`. Do NOT widen permissions (777) — the ownership mapping is the durable fix.
 - The loader sends no e-mail of its own: run reports and error notifications are delivered by the Alertmanager of the monitoring stack (see below). Its own SMTP path (aiosmtplib) was removed together with the `common.smtp` config keys.
 - `compose.yaml` forwards logs to `LOKI_URL` via Alloy; `infra/` holds the Alloy/Loki/Grafana/Prometheus/Alertmanager configs. The external service must be reachable at `LOKI_URL` (for example via a published host port). In the local mode `LOKI_URL=http://loki:3100` resolves by service name inside this very compose project; against the central DWH stack the value becomes `host.docker.internal:3100` (or the server address). The Alloy config stamps every log line with `app=excel_loader`, `job=excel_loader` and `env=<LOG_ENV>` (`LOG_ENV` from `.env`, `local` by default; set `prod` on the server).

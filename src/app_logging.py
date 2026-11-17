@@ -1,5 +1,6 @@
 import json
 import logging
+import sys
 import time
 from contextvars import ContextVar, Token
 from datetime import datetime, tzinfo
@@ -17,6 +18,14 @@ LOGGER_ROOT = "excel_loader"
 LOG_RETENTION_DAYS = 14
 LOG_FILE_SUFFIX = ".log"
 CURRENT_MODULE: ContextVar[str | None] = ContextVar("excel_loader_module", default=None)
+ANSI_RESET = "\x1b[0m"
+LEVEL_COLORS = {
+    logging.DEBUG: "\x1b[36m",  # cyan
+    logging.INFO: "\x1b[32m",  # green
+    logging.WARNING: "\x1b[33m",  # yellow
+    logging.ERROR: "\x1b[31m",  # red
+    logging.CRITICAL: "\x1b[1;31m",  # bold red
+}
 
 
 class JsonFormatter(logging.Formatter):
@@ -45,13 +54,51 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, ensure_ascii=False)
 
 
+class ConsoleFormatter(logging.Formatter):
+    """
+    Human-readable line for the terminal; the file keeps the JSON schema.
+
+    One logger, two handlers: this formatter serves ``StreamHandler`` (the
+    person watching the run), ``JsonFormatter`` serves the per-run file that
+    Alloy ships to Loki. Color is opt-in and enabled only for a TTY, so
+    redirected output, CI logs and ``docker compose logs`` stay free of escape
+    sequences.
+    """
+
+    def __init__(self, *, timezone: tzinfo, use_color: bool = False) -> None:
+        super().__init__()
+        self.timezone = timezone
+        self.use_color = use_color
+
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:  # noqa: ARG002, N802
+        timestamp = datetime.fromtimestamp(record.created, tz=self.timezone)
+        return timestamp.strftime("%Y-%m-%d %H:%M:%S")
+
+    def format(self, record: logging.LogRecord) -> str:
+        module = CURRENT_MODULE.get() or _module_from_logger(record.name)
+        level = f"{record.levelname:<8}"
+        color = LEVEL_COLORS.get(record.levelno) if self.use_color else None
+        if color is not None:
+            level = f"{color}{level}{ANSI_RESET}"
+        line = f"{self.formatTime(record)} {level} {module}: {record.getMessage()}"
+        if record.exc_info:
+            line = f"{line}\n{self.formatException(record.exc_info)}"
+        if record.stack_info:
+            line = f"{line}\n{self.formatStack(record.stack_info)}"
+        return line
+
+
 def configure_logging(settings: Settings, started_at: datetime) -> Path:
     settings.logs_dir.mkdir(parents=True, exist_ok=True)
     log_path = settings.logs_dir / f"{started_at.strftime('%d.%m.%Y-%H.%M.%S')}{LOG_FILE_SUFFIX}"
 
-    formatter = JsonFormatter(
+    json_formatter = JsonFormatter(
         timezone=settings.app_timezone,
         run_id=started_at.isoformat(timespec="seconds"),
+    )
+    console_formatter = ConsoleFormatter(
+        timezone=settings.app_timezone,
+        use_color=sys.stderr.isatty(),
     )
 
     logger = logging.getLogger(LOGGER_ROOT)
@@ -59,11 +106,14 @@ def configure_logging(settings: Settings, started_at: datetime) -> Path:
     logger.handlers.clear()
     logger.propagate = False
 
+    # The file is the machine-readable stream: Alloy tails it into Loki, so the
+    # JSON schema (timestamp/level/logger/module/message/run_id) stays stable.
     file_handler = logging.FileHandler(log_path, encoding="utf-8")
-    file_handler.setFormatter(formatter)
+    file_handler.setFormatter(json_formatter)
 
+    # The console is for the person watching the run; it is not parsed.
     stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(formatter)
+    stream_handler.setFormatter(console_formatter)
 
     logger.addHandler(file_handler)
     logger.addHandler(stream_handler)

@@ -1,8 +1,9 @@
 """
 Logging unit tests for ``app_logging``.
 
-Covers ``JsonFormatter`` fields, the module fallback, ``get_logger`` naming and
-``configure_logging`` (JSON-lines file + retention pruning of old logs).
+Covers ``JsonFormatter`` fields (the file/Loki stream), ``ConsoleFormatter``
+(human-readable terminal output), the module fallback, ``get_logger`` naming and
+``configure_logging`` (JSON-lines file + text console + retention pruning).
 """
 
 import json
@@ -17,6 +18,8 @@ from config import Settings
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    import pytest
 
 MODULE_CODES = ("quotes_nsi", "quotes", "pd", "sales_op")
 
@@ -107,6 +110,61 @@ def test_get_logger_naming() -> None:
     assert app_logging.get_logger("").name == "excel_loader"
     assert app_logging.get_logger("pd").name == "excel_loader.pd"
     assert app_logging.get_logger("pd.").name == "excel_loader.pd"
+
+
+def test_console_formatter_is_human_readable() -> None:
+    formatter = app_logging.ConsoleFormatter(timezone=ZoneInfo("UTC"))
+
+    line = formatter.format(_record("excel_loader.sales_op.excel_parser", "старт загрузки"))
+
+    assert " INFO " in line
+    assert " sales_op: старт загрузки" in line
+    assert "\x1b[" not in line, "no escape sequences without a TTY"
+
+
+def test_console_formatter_colors_the_level_only_when_enabled() -> None:
+    formatter = app_logging.ConsoleFormatter(timezone=ZoneInfo("UTC"), use_color=True)
+
+    line = formatter.format(_record("excel_loader", "x"))
+
+    assert f"\x1b[32mINFO    {app_logging.ANSI_RESET} common: x" in line
+
+
+def test_console_formatter_appends_the_traceback() -> None:
+    formatter = app_logging.ConsoleFormatter(timezone=ZoneInfo("UTC"))
+    try:
+        error = ValueError("падение")
+        raise error
+    except ValueError:
+        record = _record("excel_loader", "сломалось")
+        record.exc_info = (ValueError, error, error.__traceback__)
+
+    line = formatter.format(record)
+
+    assert line.startswith("20")  # timestamp first
+    assert "сломалось" in line
+    assert "Traceback" in line
+    assert "ValueError: падение" in line
+
+
+def test_configure_logging_console_is_human_readable(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    app_logging.configure_logging(_settings(tmp_path), started_at=datetime.now(UTC))
+    root = logging.getLogger(app_logging.LOGGER_ROOT)
+    try:
+        root.info("консоль %s", "ok")
+    finally:
+        for handler in list(root.handlers):
+            handler.close()
+        root.handlers.clear()
+
+    captured = capsys.readouterr()
+
+    assert "INFO" in captured.err
+    assert "common: консоль ok" in captured.err
+    assert '"level"' not in captured.err, "the console must not carry JSON"
 
 
 def test_configure_logging_writes_json_lines_and_prunes_old_logs(tmp_path: Path) -> None:

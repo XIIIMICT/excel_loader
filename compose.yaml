@@ -7,11 +7,6 @@ include:
 services:
   loader:
     container_name: el-loader
-    # Хостовые UID/GID ради bind-папок ./logs и ./unloaded_data: на Linux
-    # без этого лог-файлы принадлежали бы псевдо-пользователю образа
-    # (appuser, uid 100) и ломали права доступа. HOST_UID/HOST_GID задаются
-    # в .env (`id -u` / `id -g`); в Docker Desktop не действует.
-    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     build:
       context: .
       dockerfile: Dockerfile
@@ -24,7 +19,10 @@ services:
         bind:
           create_host_path: false
       - /etc/ssl/certs:/etc/ssl/certs:ro
-      - ./data:/app/data:ro
+      # Writable: after a successful load the loader renames the processed
+      # files to _<name>. The container runs as root, so the rename is not
+      # blocked by the host UID/GID.
+      - ./data:/app/data
       - ./mock_data/pd:/app/mock_data/pd:ro
       - ./logs:/app/logs
       - ./unloaded_data:/app/unloaded_data

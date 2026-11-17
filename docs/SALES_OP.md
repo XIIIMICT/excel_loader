@@ -15,7 +15,7 @@ The per-client operational sales-plan module. Unlike `quotes`/`quotes_nsi`, the 
 
 Source is **local only**: `source = "imap"` (or `--source imap`) fails the module with an error — IMAP attachments have no month folder. `file_pattern` defaults to `.*\.xlsx$`.
 
-The loader never writes to `data_dir`: the Compose mount is read-only, so there is no "processed" rename and no state file. The underscore prefix is a **manual** "do not load" marker (see below).
+The loader writes to `data_dir` only to rename a successfully loaded file with a leading `_` (see below); it never moves files between months and keeps no state file. `./data` is mounted read-write for that rename.
 
 ## Month selection (`--force`, `--months`)
 
@@ -27,7 +27,7 @@ The unit of loading is a month folder; one run loads one or several months.
 - **`--force`** — include files whose name starts with `_`. Without it such files are ignored at discovery. `--force` does not change month selection.
 - Both flags are **sales_op-only**: with `sales_op` not selected (or not run) the CLI exits with code `2` before loading anything.
 
-A file starting with `_` is a manual marker with no DB or filesystem bookkeeping: the next run skips it unless `--force` is given. The loader never renames files.
+A file starting with `_` marks it as already loaded: the next run skips it unless `--force` is given. After the table of a `(source, month)` group is replaced, every file of that group is renamed to `_<name>`; a file that already carries the prefix is left alone (no `__`). A failed rename (the file is open in Excel, the target `_<name>` already exists, the mount is not writable) is collected and reported as **one WARNING with the list of files**; the load itself succeeds and the next run simply reloads them.
 
 ## Specification (`Спецификация sales_op_raw_view.xlsb`, sheet `спека`)
 
@@ -83,6 +83,7 @@ Files are discovered per selected month folder and grouped by `(source, month)`:
 ## Load and view
 
 - One transaction per `(source, month)`: create the schema/table if missing, add only missing columns, `DELETE` rows with `doc_yearmonth` in `[month_start, next_month_start)`, insert the new rows, write the source-history rows. `TRUNCATE` is never used: rows of other months survive.
+- The end-of-run summary is ordered: recognized files (`файл … распознан`), table replacements (`Данные таблицы <schema>.<table> за <YYYY-MM> заменены: строк=N.`), `Не найдено данных для <schema>.<table> за <YYYY-MM>.` for every specification source/month pair with no matching file, then the rename results (`обработанный файл … переименован в …`, or one aggregated warning). A zero-row file keeps its replacement line with `строк=0`; a source/month whose file exists but fails is reported as an error instead of "no data".
 - Table changes are **additive only**: existing columns are never dropped, retyped or re-nullable'd. An existing column absent from the spec gets its DB `DEFAULT` or `NULL` on insert; a legacy `NOT NULL` column without a `DEFAULT` (and not in the spec) makes the insert fail loudly — no default is invented.
 - Every `sales_op_<code>` table has `created_at TIMESTAMPTZ NOT NULL DEFAULT now()` (physical metadata, not part of the specification). A legacy table gets the column added on the next load; the default fills the existing rows.
 - If any file of a `(source, month)` fails (month mismatch, parse error, missing required column), that `(source, month)` is not touched at all: the `DELETE` does not run, the old rows stay. Other sources and months still load.
@@ -91,7 +92,7 @@ Files are discovered per selected month folder and grouped by `(source, month)`:
 
 ## Warnings and errors
 
-- A missing source in a month, several files for one plan date, or an unparseable cell value is a `WARNING`; warnings do not fail the run and do not block post-actions. A missing required (Not Nullable) column or an empty required value is an error.
+- A missing source in a month is reported at the end of the run as `Не найдено данных для <schema>.<table> за <YYYY-MM>.` (`WARNING`; it used to be a scan-time "файлы по шаблону … не найдены" line). Several files for one plan date or an unparseable cell value is a `WARNING` too; warnings do not fail the run and do not block post-actions. A missing required (Not Nullable) column or an empty required value is an error.
 - Errors: a missing/unreadable specification, an IMAP source, a missing month folder, an undeterminable date, a plan date outside the month folder, a missing required column or value, a table-replacement failure, a view-creation failure. They set `has_errors = true`; the remaining sources/months keep being processed.
 - **openpyxl date-serial warnings.** openpyxl's `read_only=True` reader emits `UserWarning: Cell … is marked as a date but the serial value … is outside the limits for dates` (no file name) from `openpyxl.worksheet._reader` during lazy `iter_rows`. `_workbook_warnings_suppressed(source_path, relevant_columns=…)` wraps the whole workbook lifecycle: it hides this warning and the "Unknown extension … will be removed" one from openpyxl's default stderr. The parser passes the mutable `relevant_columns` set and fills it with `position + 1` for every bound column after `_bind_source_columns`; the scope reads it after `yield`. Date warnings inside those columns are aggregated into one WARNING line per file (`План продаж: openpyxl в файле <path>: ячеек с датой вне диапазона Excel: <count> (<first five cell=serial>)`); a warning outside them — a stray date-formatted cell far to the right of the plan block, which openpyxl parses anyway because `iter_rows(max_col=…)` does not skip the XML cells — is only counted at DEBUG. `relevant_columns=None` (the inspection fallback) keeps the per-cell WARNING. The cell itself becomes `#VALUE!` → `NULL` via the usual excel-error path. Unrelated warnings are re-emitted unchanged; there is no module-level `filterwarnings`.
 - Run failures go out as e-mail only through the Alertmanager of the monitoring stack (rule-driven); the loader itself does not mail anything.

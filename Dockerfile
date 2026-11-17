@@ -17,13 +17,14 @@ WORKDIR /app
 ENV PYTHONUNBUFFERED=1 \
     PATH="/app/.venv/bin:$PATH"
 
-RUN addgroup -S appgroup && adduser -S -G appgroup -D appuser && \
-    mkdir -p /app/logs /app/unloaded_data /app/mock_data/pd && \
-    chown -R appuser:appgroup /app
+# The container runs as root on purpose (a deliberate deviation from the
+# non-root default): the loader renames processed files in the bind-mounted
+# ./data, and a fixed non-root uid turned those renames into permission errors
+# on Linux. See docs/ARCHITECTURE.md.
+RUN mkdir -p /app/logs /app/unloaded_data /app/mock_data/pd
 
-COPY --chown=appuser:appgroup --from=deps /app/.venv /app/.venv
-COPY --chown=appuser:appgroup src ./src
-COPY --chown=appuser:appgroup sql ./sql
+COPY --from=deps /app/.venv /app/.venv
+COPY src ./src
+COPY sql ./sql
 
-USER appuser
 ENTRYPOINT ["python", "src/main.py"]

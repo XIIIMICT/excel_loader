@@ -2,7 +2,7 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from app_logging import get_logger
 from business_errors import BusinessLoadError
@@ -19,6 +19,7 @@ from source_resolver import SourceError, resolve_all_pattern_sources
 from storage import prepare_storage
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
     from datetime import tzinfo
     from pathlib import Path
 
@@ -39,10 +40,18 @@ ALL_MONTHS_LABEL = "all"
 type MonthGroupKey = tuple[str, date]
 
 
+class _FileEntry(Protocol):
+    """Minimal file descriptor shared by ``SourceFile`` and ``SelectedSalesOpFile``."""
+
+    @property
+    def path(self) -> Path: ...
+
+
 @dataclass(frozen=True, slots=True)
 class _FileSelection:
     files_by_group: dict[MonthGroupKey, tuple[SelectedSalesOpFile, ...]]
     failed_groups: frozenset[MonthGroupKey]
+    missing_groups: frozenset[MonthGroupKey]
     warnings: int
     failures: int
 
@@ -125,7 +134,7 @@ async def run_sales_op(settings: Settings, *, options: SalesOpRunOptions) -> Mod
     )
 
     async with postgres_session(settings) as engine:
-        loaded_tables, storage_failures = await _replace_tables(
+        loaded_groups, loaded_tables, storage_failures = await _replace_tables(
             settings,
             engine=engine,
             specification=specification,
@@ -144,11 +153,14 @@ async def run_sales_op(settings: Settings, *, options: SalesOpRunOptions) -> Mod
             view_failures = 1
             LOGGER.exception("Не удалось создать представление sales_op_raw_view.")
 
+    _log_missing_data(settings, missing_groups=selection.missing_groups)
+    rename_failures = _mark_processed_files(selection.files_by_group, loaded_groups=loaded_groups)
+
     return _sales_op_outcome(
         has_errors=selection.failures + parsed.failures + storage_failures + view_failures > 0,
         loaded_tables=loaded_tables,
         view_reference=view_reference,
-        has_warnings=selection.warnings + parsed.warnings > 0,
+        has_warnings=selection.warnings + parsed.warnings + rename_failures > 0,
     )
 
 
@@ -246,6 +258,7 @@ def _select_source_files(
 ) -> _FileSelection:
     candidates: dict[MonthGroupKey, list[SelectedSalesOpFile]] = defaultdict(list)
     failed_groups: set[MonthGroupKey] = set()
+    missing_groups: set[MonthGroupKey] = set()
     warnings = 0
     failures = 0
     for month_start, source_files in month_files:
@@ -259,16 +272,19 @@ def _select_source_files(
             candidates[group_key].extend(group_candidates)
         failed_groups.update(month_failed_groups)
         failures += month_failures
-        warnings += _warn_about_missing_sources(
+        month_missing = _missing_source_groups(
             month_start,
             sources_with_candidates=sources_with_candidates,
             specification_sources=specification_sources,
         )
+        missing_groups.update(month_missing)
+        warnings += len(month_missing)
 
     files_by_group, selection_warnings = _choose_latest_files(candidates)
     return _FileSelection(
         files_by_group=files_by_group,
         failed_groups=frozenset(failed_groups),
+        missing_groups=frozenset(missing_groups),
         warnings=warnings + selection_warnings,
         failures=failures,
     )
@@ -346,24 +362,25 @@ def _inspect_candidate(
     )
 
 
-def _warn_about_missing_sources(
+def _missing_source_groups(
     month_start: date,
     *,
     sources_with_candidates: set[str],
     specification_sources: dict[str, SalesOpSourceSpecification],
-) -> int:
-    warnings = 0
-    for source_code, source_specification in specification_sources.items():
-        if source_code in sources_with_candidates:
-            continue
-        warnings += 1
-        LOGGER.warning(
-            "План продаж %s за %s: файлы по шаблону %r не найдены.",
-            source_code,
-            _month_folder_name(month_start),
-            source_specification.file_pattern,
-        )
-    return warnings
+) -> set[MonthGroupKey]:
+    """
+    Source/month pairs with no matching file at all.
+
+    The run reports them once, after the table-replacement summary, as
+    "no data for <dest_table> for <month>" - the same information used to be a
+    scan-time warning, but the end-of-run report is where the loader's result
+    is read.
+    """
+    return {
+        (source_code, month_start)
+        for source_code in specification_sources
+        if source_code not in sources_with_candidates
+    }
 
 
 def _choose_latest_files(
@@ -474,7 +491,8 @@ async def _replace_tables(
     specification: SalesOpSpecification,
     rows_by_group: dict[MonthGroupKey, list[DbRow]],
     history_by_group: dict[MonthGroupKey, list[SourceHistoryEntry]],
-) -> tuple[tuple[Table, ...], int]:
+) -> tuple[frozenset[MonthGroupKey], tuple[Table, ...], int]:
+    loaded_groups: set[MonthGroupKey] = set()
     loaded_tables: list[Table] = []
     loaded_table_keys: set[tuple[str, str]] = set()
     failures = 0
@@ -540,6 +558,7 @@ async def _replace_tables(
         if table_key not in loaded_table_keys:
             loaded_table_keys.add(table_key)
             loaded_tables.append(table)
+        loaded_groups.add(group_key)
         LOGGER.info(
             "Данные таблицы %s.%s за %s заменены: строк=%s.",
             table.schema,
@@ -547,7 +566,64 @@ async def _replace_tables(
             _month_folder_name(month_start),
             inserted,
         )
-    return tuple(loaded_tables), failures
+    return frozenset(loaded_groups), tuple(loaded_tables), failures
+
+
+def _log_missing_data(settings: Settings, *, missing_groups: frozenset[MonthGroupKey]) -> None:
+    """
+    End-of-run report for source/month pairs that produced no file.
+
+    Emitted after the table-replacement lines so the summary reads top-down:
+    replaced tables first, then the pairs with nothing to load.
+    """
+    module = settings.modules["sales_op"]
+    for source_code, month_start in sorted(missing_groups, key=lambda item: (item[1], item[0])):
+        LOGGER.warning(
+            "Не найдено данных для %s за %s.",
+            module.table_reference(source_table_name(source_code)),
+            _month_folder_name(month_start),
+        )
+
+
+def _mark_processed_files(
+    files_by_group: Mapping[MonthGroupKey, Sequence[_FileEntry]],
+    *,
+    loaded_groups: frozenset[MonthGroupKey],
+) -> int:
+    """
+    Rename the files of successfully replaced source/month groups to ``_<name>``.
+
+    The underscore marks a file as already loaded: discovery skips it unless
+    ``--force`` is given. Files that already carry the prefix are left alone.
+    A failed rename (the file is open in Excel, the target already exists, the
+    mount is not writable) never fails the load: the files are collected and
+    reported as one WARNING, and the next run simply reloads them.
+    """
+    failures: list[tuple[Path, str]] = []
+    for group_key in sorted(loaded_groups, key=lambda item: (item[1], item[0])):
+        for selected_file in files_by_group[group_key]:
+            source_path = selected_file.path
+            if source_path.name.startswith("_"):
+                continue
+            renamed_path = source_path.with_name(f"_{source_path.name}")
+            if renamed_path.exists():
+                failures.append((source_path, f"целевой файл уже существует: {renamed_path.name}"))
+                continue
+            try:
+                source_path.rename(renamed_path)
+            except OSError as error:
+                failures.append((source_path, str(error)))
+                continue
+            LOGGER.info("План продаж: обработанный файл %s переименован в %s.", source_path.name, renamed_path.name)
+
+    if failures:
+        LOGGER.warning(
+            "План продаж: не удалось переименовать обработанные файлы (%d): %s. Первая причина: %s.",
+            len(failures),
+            ", ".join(f"{path.parent.name}/{path.name}" for path, _reason in failures),
+            failures[0][1],
+        )
+    return len(failures)
 
 
 def _classify_file(file_name: str, *, specification_sources: dict[str, SalesOpSourceSpecification]) -> str | None:

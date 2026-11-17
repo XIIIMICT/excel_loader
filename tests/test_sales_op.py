@@ -12,6 +12,8 @@ from sales_op.excel_parser import _bind_source_columns, parse_sales_op_workbook
 from sales_op.models import SalesOpError, SalesOpRunOptions
 from sales_op.runner import (
     _collect_month_files,
+    _log_missing_data,
+    _mark_processed_files,
     _parse_selected_files,
     _select_month_folders,
     _select_source_files,
@@ -356,6 +358,59 @@ def test_collect_month_files_skips_underscore_without_force(tmp_path: Path, sett
     assert [source.path.name for _month, files in with_force for source in files] == ["_processed.xlsx", "plan.xlsx"]
 
 
+def test_mark_processed_files_renames_only_loaded_groups(tmp_path: Path) -> None:
+    month_start = date(2026, 7, 1)
+    loaded = tmp_path / "loaded.xlsx"
+    loaded.write_bytes(b"")
+    prefixed = tmp_path / "_prefixed.xlsx"
+    prefixed.write_bytes(b"")
+    not_loaded = tmp_path / "not_loaded.xlsx"
+    not_loaded.write_bytes(b"")
+    files_by_group = {
+        ("mfk", month_start): (_source_file(loaded), _source_file(prefixed)),
+        ("bsk_soda", month_start): (_source_file(not_loaded),),
+    }
+
+    failures = _mark_processed_files(
+        files_by_group,
+        loaded_groups=frozenset({("mfk", month_start)}),
+    )
+
+    assert failures == 0
+    assert (tmp_path / "_loaded.xlsx").exists()
+    assert not loaded.exists()
+    assert (tmp_path / "_prefixed.xlsx").exists()
+    assert not (tmp_path / "__prefixed.xlsx").exists()
+    assert not_loaded.exists()
+
+
+def test_mark_processed_files_reports_rename_failures_in_one_warning(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    month_start = date(2026, 7, 1)
+    first = tmp_path / "first.xlsx"
+    first.write_bytes(b"")
+    second = tmp_path / "second.xlsx"
+    second.write_bytes(b"")
+    (tmp_path / "_first.xlsx").write_bytes(b"")  # the rename target is taken
+    (tmp_path / "_second.xlsx").write_bytes(b"")
+
+    with caplog.at_level(logging.WARNING, logger="excel_loader"):
+        failures = _mark_processed_files(
+            {("mfk", month_start): (_source_file(first), _source_file(second))},
+            loaded_groups=frozenset({("mfk", month_start)}),
+        )
+
+    assert failures == 2
+    messages = [record.getMessage() for record in caplog.records if record.levelno == logging.WARNING]
+    assert len(messages) == 1, messages
+    assert "first.xlsx" in messages[0]
+    assert "second.xlsx" in messages[0]
+    assert first.exists()
+    assert second.exists()
+
+
 def test_month_mismatch_blocks_only_that_source_group(tmp_path: Path) -> None:
     specification = read_sales_op_specification(MOCK_SALES_OP_DIR / SPECIFICATION_FILE_NAME)
     month_start = date(2026, 7, 1)
@@ -372,7 +427,35 @@ def test_month_mismatch_blocks_only_that_source_group(tmp_path: Path) -> None:
 
     assert set(selection.files_by_group) == {("mfk", month_start)}
     assert selection.failed_groups == frozenset({("bsk_polymers", month_start)})
+    assert selection.missing_groups == frozenset(
+        (source_code, month_start)
+        for source_code in specification.sources
+        if source_code not in {"mfk", "bsk_polymers"}
+    )
     assert selection.failures == 1
+
+
+def test_missing_source_data_is_reported_in_the_end_of_run_summary(
+    settings: Settings,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="excel_loader"):
+        _log_missing_data(
+            settings,
+            missing_groups=frozenset(
+                {
+                    ("mfk", date(2026, 7, 1)),
+                    ("bsk_soda", date(2026, 6, 1)),
+                }
+            ),
+        )
+
+    messages = [record.getMessage() for record in caplog.records]
+
+    assert messages == [
+        "Не найдено данных для el.sales_op_bsk_soda за 2026-06.",
+        "Не найдено данных для el.sales_op_mfk за 2026-07.",
+    ]
 
 
 def test_parse_failure_of_one_file_blocks_the_whole_source_month(tmp_path: Path) -> None:

@@ -126,6 +126,68 @@ def test_workbook_warnings_suppressed_logs_openpyxl_date_warning(
     ), messages
 
 
+def test_workbook_warnings_suppressed_keeps_far_date_warning_at_debug(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A stray date cell outside the parsed columns must not reach WARNING."""
+    source_path = tmp_path / "far_date.xlsx"
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet["A1"] = "ok"
+    worksheet["BE15"] = 99999999  # far right of the plan block
+    worksheet["BE15"].number_format = "dd.mm.yyyy"
+    workbook.save(source_path)
+
+    with (
+        warnings.catch_warnings(record=True) as leaked,
+        caplog.at_level(logging.DEBUG, logger="excel_loader"),
+        _workbook_warnings_suppressed(source_path, relevant_columns={1}),
+    ):
+        warnings.simplefilter("always")
+        book = load_openpyxl_workbook(source_path, data_only=True, read_only=True)
+        tuple(book.active.iter_rows(values_only=True))
+        book.close()
+
+    assert not leaked
+    assert not [record for record in caplog.records if record.levelno == logging.WARNING]
+    debug_messages = [record.getMessage() for record in caplog.records if record.levelno == logging.DEBUG]
+    assert any("вне читаемых столбцов: 1" in message for message in debug_messages), debug_messages
+
+
+def test_workbook_warnings_suppressed_aggregates_relevant_date_warnings(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Several bad dates inside the parsed columns collapse into one WARNING."""
+    source_path = tmp_path / "two_bad_dates.xlsx"
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet["A1"] = 99999999
+    worksheet["A1"].number_format = "dd.mm.yyyy"
+    worksheet["B1"] = "ok"
+    worksheet["C1"] = 88888888
+    worksheet["C1"].number_format = "dd.mm.yyyy"
+    workbook.save(source_path)
+
+    with (
+        warnings.catch_warnings(record=True) as leaked,
+        caplog.at_level(logging.WARNING, logger="excel_loader"),
+        _workbook_warnings_suppressed(source_path, relevant_columns={1, 3}),
+    ):
+        warnings.simplefilter("always")
+        book = load_openpyxl_workbook(source_path, data_only=True, read_only=True)
+        tuple(book.active.iter_rows(values_only=True))
+        book.close()
+
+    assert not leaked
+    messages = [record.getMessage() for record in caplog.records if record.levelno == logging.WARNING]
+    assert len(messages) == 1, messages
+    assert str(source_path) in messages[0]
+    assert "A1=99999999" in messages[0]
+    assert "C1=88888888" in messages[0]
+
+
 def test_is_excel_owner_file_detects_lock_prefix() -> None:
     assert _is_excel_owner_file("~$report.xlsx")
     assert _is_excel_owner_file("~$~normal.xlsx")

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING
 
-from openpyxl.utils import get_column_letter
+from openpyxl.utils import column_index_from_string, get_column_letter
 from openpyxl.utils.datetime import from_excel
 from python_calamine import SheetVisibleEnum
 from python_calamine import load_workbook as calamine_load_workbook
@@ -51,6 +51,13 @@ CLIENT_NAME_TARGET = "client_name"
 # numeric cell holds a serial outside the supported date range; the cell is
 # then returned as the error value ``#VALUE!``.
 OPENPYXL_DATE_WARNING = r"is marked as a date but the serial value .* is outside the limits for dates"
+# The same warning with the coordinate and serial captured, so the column can be
+# matched against the columns the parser actually reads.
+OPENPYXL_DATE_WARNING_DETAILS = re.compile(
+    r"^Cell (?P<column>[A-Z]+)(?P<row>\d+) is marked as a date but the serial value (?P<serial>\S+) "
+    r"is outside the limits for dates"
+)
+DATE_WARNING_SAMPLE_LIMIT = 5
 LOGGER = get_logger("sales_op")
 
 
@@ -79,7 +86,8 @@ def parse_sales_op_workbook(
     *,
     source_specification: SalesOpSourceSpecification,
 ) -> ParsedSalesOpFile:
-    with _workbook_warnings_suppressed(source_path):
+    relevant_columns: set[int] = set()
+    with _workbook_warnings_suppressed(source_path, relevant_columns=relevant_columns):
         workbook = _load_workbook(source_path)
         try:
             worksheet = _first_visible_sheet(workbook)
@@ -94,6 +102,9 @@ def parse_sales_op_workbook(
                 headers=tuple(headers[first_column : last_column + 1]),
                 first_column=first_column,
             )
+            # 0-based row indices -> 1-based openpyxl columns; the warning scope
+            # reads this set after the workbook is closed.
+            relevant_columns.update(position + 1 for position in bound_columns.values())
             if missing_headers:
                 message = f"в файле {source_path} отсутствуют обязательные столбцы из спецификации: " + ", ".join(
                     repr(header) for header in missing_headers
@@ -406,7 +417,11 @@ class _RowContext:
 
 
 @contextmanager
-def _workbook_warnings_suppressed(source_path: Path) -> Generator[None]:
+def _workbook_warnings_suppressed(
+    source_path: Path,
+    *,
+    relevant_columns: set[int] | None = None,
+) -> Generator[None]:
     # ``load_openpyxl_workbook`` filters the "Unknown extension" warning during
     # ``load_workbook``, but a ``read_only=True`` workbook parses its sheet
     # lazily: both that warning and the "serial value outside the limits for
@@ -417,25 +432,62 @@ def _workbook_warnings_suppressed(source_path: Path) -> Generator[None]:
     #
     # Both known openpyxl warnings are captured (``record=True`` keeps them
     # from openpyxl's default stderr output). The extension warning is dropped;
-    # the date warning is re-emitted by our own logger with the source file
-    # name (openpyxl's text has none) — the cell itself is returned as
-    # ``#VALUE!`` and goes through the usual excel-error-to-NULL path, so no
-    # data is silently lost. Every other warning is re-issued after the scope,
-    # so nothing unrelated is masked and no global filter state is installed.
+    # date warnings are re-emitted by our own logger with the source file name
+    # (openpyxl's text has none) - the cell itself is returned as ``#VALUE!``
+    # and goes through the usual excel-error-to-NULL path, so no data is
+    # silently lost. Every other warning is re-issued after the scope, so
+    # nothing unrelated is masked and no global filter state is installed.
+    #
+    # ``relevant_columns`` holds the 1-based columns the parser reads; the
+    # caller fills the mutable set while the scope is open (it is only read
+    # after ``yield``). Workbooks carry stray date-formatted cells far to the
+    # right of the plan block (``BE15`` and the like); openpyxl parses every
+    # ``<c>`` of a row even when ``iter_rows`` slices the columns, so those
+    # warnings cannot be avoided by ``max_col``. Only warnings inside the bound
+    # columns become a WARNING line (aggregated per file); the rest are counted
+    # at DEBUG. ``None`` keeps the per-cell WARNING (the inspection path, which
+    # has no column binding).
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         yield
 
+    date_warnings: list[str] = []
+    ignored_date_warnings = 0
     for warning in caught:
         message = str(warning.message)
         if warning.category is UserWarning and re.search(OPENPYXL_EXTENSION_WARNING, message):
             continue
-        if warning.category is UserWarning and re.search(OPENPYXL_DATE_WARNING, message):
-            LOGGER.warning("План продаж: openpyxl в файле %s: %s", source_path, message)
-            continue
+        if warning.category is UserWarning:
+            details = OPENPYXL_DATE_WARNING_DETAILS.match(message)
+            if details is not None:
+                if relevant_columns is not None and column_index_from_string(details["column"]) not in relevant_columns:
+                    ignored_date_warnings += 1
+                    continue
+                date_warnings.append(f"{details['column']}{details['row']}={details['serial']}")
+                continue
+            if re.search(OPENPYXL_DATE_WARNING, message):
+                # openpyxl changed the wording: keep the diagnostic without the
+                # column filter rather than losing it.
+                date_warnings.append(message)
+                continue
         warnings.warn_explicit(
             warning.message,
             warning.category,
             filename=warning.filename,
             lineno=warning.lineno,
+        )
+
+    if ignored_date_warnings:
+        LOGGER.debug(
+            "План продаж: openpyxl в файле %s: ячеек с датой вне диапазона Excel вне читаемых столбцов: %d",
+            source_path,
+            ignored_date_warnings,
+        )
+    if date_warnings:
+        samples = ", ".join(date_warnings[:DATE_WARNING_SAMPLE_LIMIT])
+        LOGGER.warning(
+            "План продаж: openpyxl в файле %s: ячеек с датой вне диапазона Excel: %d (%s)",
+            source_path,
+            len(date_warnings),
+            samples,
         )

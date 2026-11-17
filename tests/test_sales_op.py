@@ -1,3 +1,4 @@
+import logging
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -134,7 +135,7 @@ class TestSalesOpSpecification:
         assert all("user_name" not in row for row in parsed.rows)
 
 
-def _synthetic_plan(path: Path, plan_date: str = "2026-07-01") -> None:
+def _synthetic_plan(path: Path, plan_date: str = "2026-07-01", *, junk_date_cell: str | None = None) -> None:
     workbook = Workbook()
     sheet = workbook.active
     sheet["A1"] = "План продаж :"
@@ -153,6 +154,11 @@ def _synthetic_plan(path: Path, plan_date: str = "2026-07-01") -> None:
     sheet.append(("P1", "S1", "G1", None, 20, None))  # empty client -> skipped
     sheet.append((None,) * len(headers))  # fully blank -> stop
     sheet.append(("P2", "S2", "G2", "Client B", 30, None))  # must not be read
+    if junk_date_cell is not None:
+        # A date-formatted serial outside Excel's range, the way real workbooks
+        # carry stray cells far to the right of the plan block.
+        sheet[junk_date_cell] = 99999999
+        sheet[junk_date_cell].number_format = "dd.mm.yyyy"
     workbook.save(path)
 
 
@@ -177,6 +183,56 @@ def test_skips_rows_without_client_name_and_stops_at_blank_row(tmp_path: Path) -
     assert len(parsed.rows) == 1
     assert parsed.rows[0]["client_name"] == "Client A"
     assert parsed.rows[0]["producer_code"] == "P1"
+
+
+def test_far_right_date_serial_is_not_logged_as_a_warning(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    specification = read_sales_op_specification(MOCK_SALES_OP_DIR / SPECIFICATION_FILE_NAME)
+    source_path = tmp_path / "plan.xlsx"
+    _synthetic_plan(source_path, junk_date_cell="BE3")
+
+    with caplog.at_level(logging.DEBUG, logger="excel_loader"):
+        parsed = parse_sales_op_workbook(
+            source_path,
+            source_specification=specification.sources["bsk_polymers"],
+        )
+
+    assert len(parsed.rows) == 1
+    date_warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.WARNING and "датой вне диапазона" in record.getMessage()
+    ]
+    assert date_warnings == []
+    debug_messages = [record.getMessage() for record in caplog.records if record.levelno == logging.DEBUG]
+    assert any("вне читаемых столбцов: 1" in message for message in debug_messages), debug_messages
+
+
+def test_date_serial_in_a_bound_column_is_logged_once(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    specification = read_sales_op_specification(MOCK_SALES_OP_DIR / SPECIFICATION_FILE_NAME)
+    source_path = tmp_path / "plan.xlsx"
+    _synthetic_plan(source_path, junk_date_cell="F3")  # «Комментарии», a bound column
+
+    with caplog.at_level(logging.WARNING, logger="excel_loader"):
+        parsed = parse_sales_op_workbook(
+            source_path,
+            source_specification=specification.sources["bsk_polymers"],
+        )
+
+    assert len(parsed.rows) == 1
+    assert parsed.warning_count == 1
+    date_warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.WARNING and "датой вне диапазона" in record.getMessage()
+    ]
+    assert len(date_warnings) == 1, date_warnings
+    assert "F3=99999999" in date_warnings[0]
 
 
 def test_resolve_folder_sources_finds_underscore_prefixed_files(tmp_path: Path) -> None:

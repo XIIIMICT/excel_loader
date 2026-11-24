@@ -187,6 +187,50 @@ def test_skips_rows_without_client_name_and_stops_at_blank_row(tmp_path: Path) -
     assert parsed.rows[0]["producer_code"] == "P1"
 
 
+def _plan_with_text_zeros(path: Path) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet["A1"] = "План продаж :"
+    sheet["B1"] = "2026-07-01"
+    headers = (
+        "Производитель",
+        "Продавец",
+        "Номенклатурная группа",
+        "Наименование контрагента",
+        "Объем продаж, тонн",
+        "Комментарии",
+    )
+    for column, header in enumerate(headers, start=1):
+        sheet.cell(row=2, column=column, value=header)
+    # A textual "0" in a row-filter column skips the row like a blank cell.
+    sheet.append(("P1", " 0 ", "G1", "Client A", 0, "0"))
+    sheet.append(("P1", "S1", "G1", "0", 0, "10"))
+    # In a kept row, "0" in a text column -> NULL; a real zero in the float
+    # column and real text are kept.
+    sheet.append(("P1", "S1", "G1", "Client A", 0, "0"))
+    sheet.append((None,) * len(headers))  # fully blank -> stop
+    workbook.save(path)
+
+
+def test_text_zero_is_null_but_numeric_zero_is_kept(tmp_path: Path) -> None:
+    specification = read_sales_op_specification(MOCK_SALES_OP_DIR / SPECIFICATION_FILE_NAME)
+    source_path = tmp_path / "plan.xlsx"
+    _plan_with_text_zeros(source_path)
+
+    parsed = parse_sales_op_workbook(
+        source_path,
+        source_specification=specification.sources["bsk_polymers"],
+    )
+
+    assert len(parsed.rows) == 1  # rows 3-4 skipped by the "0" filter
+    row = parsed.rows[0]
+    assert row["comments"] is None
+    assert row["producer_code"] == "P1"
+    assert row["seller_code"] == "S1"
+    assert row["client_name"] == "Client A"
+    assert row["quantity_t"] == 0.0  # float column: a real zero is kept
+
+
 def test_far_right_date_serial_is_not_logged_as_a_warning(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,

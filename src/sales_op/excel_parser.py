@@ -340,9 +340,9 @@ def _is_non_plan_row(
     client_name_index: int | None,
 ) -> bool:
     return (
-        _is_blank_cell(_cell_at(raw_row, producer_index))
-        or _is_blank_cell(_cell_at(raw_row, seller_index))
-        or _is_blank_cell(_cell_at(raw_row, client_name_index))
+        _is_missing_text_cell(_cell_at(raw_row, producer_index))
+        or _is_missing_text_cell(_cell_at(raw_row, seller_index))
+        or _is_missing_text_cell(_cell_at(raw_row, client_name_index))
     )
 
 
@@ -363,6 +363,25 @@ def _is_blank_cell(value: object) -> bool:
     return False
 
 
+def _is_text_zero(value: object) -> bool:
+    # After strip(), a text "0" is a missing value (the plans carry a literal
+    # "0" in columns like deferment_days). A numeric zero read from a cell
+    # formatted as text counts too; real text like "0,5" or "10" does not.
+    if value is None or isinstance(value, bool):
+        return False
+    if isinstance(value, str):
+        return value.strip() == "0"
+    return isinstance(value, int | float) and value == 0
+
+
+def _is_missing_text_cell(value: object) -> bool:
+    # The three row-filter columns are text in the specification: a blank or a
+    # textual "0" is a missing value for them too. The fully-blank-row check
+    # stays on _is_blank_cell so a row of "0" cells still ends the block only
+    # when it has no other data.
+    return _is_blank_cell(value) or _is_text_zero(value)
+
+
 def _prepare_row(
     raw_row: tuple[object, ...],
     *,
@@ -381,6 +400,11 @@ def _prepare_row(
             prepared[mapping.column.name] = None
             continue
         value = raw_row[column_index] if column_index < len(raw_row) else None
+        if mapping.column.kind == "text" and _is_text_zero(value):
+            # A textual "0" (or a numeric zero the workbook stores in a text
+            # column) is a missing value, just like an empty or blank string.
+            prepared[mapping.column.name] = None
+            continue
         prepared[mapping.column.name] = convert_excel_value(
             value,
             kind=mapping.column.kind,

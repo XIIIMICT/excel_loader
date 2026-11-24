@@ -97,22 +97,26 @@ def _read_sheet_frame(workbook: pd.ExcelFile, sheet_name: str) -> tuple[pd.DataF
     rows: list[dict[str, object]] = []
     locations: list[dict[str, str]] = []
     for row_position, row in enumerate(raw_frame.iloc[header_row + 1 :].itertuples(index=False, name=None)):
-        if all(_is_blank_cell(value) for value in row):
-            # A fully empty row ends the data block: everything after it
-            # (repeated data, totals) is not part of the report.
-            break
+        pub_date = row[date_column]
         product = _clean_component(row[column_indexes["Товар"]])
-        if not product:
-            # Monthly/aggregate rows keep only calculated prices (and a month
-            # name instead of a date). They are not quotes: skip, keep reading.
+        avg_price = row[price_column]
+        blank_key_cells = (_is_blank_cell(pub_date), not product, _is_blank_cell(avg_price))
+        if all(blank_key_cells):
+            # No date, product or CIF price: the data block ends here, even if
+            # other columns still hold values (a separator or a totals row).
+            break
+        if any(blank_key_cells):
+            # A quote needs all three. Monthly/aggregate rows keep only
+            # calculated prices (and a month name instead of a date); a row
+            # missing any of the three is not a quote: skip, keep reading.
             continue
         brand = _clean_component(row[column_indexes["Марка"]])
         product_version = MARKET_SUFFIX_PATTERN.sub("", f"{product} {brand}").strip()
         rows.append(
             {
-                "Дата": row[date_column],
+                "Дата": pub_date,
                 "prod_version": f"{product_version} CIF China, USD/т",
-                "CIF China, $/т": row[price_column],
+                "CIF China, $/т": avg_price,
                 "product_id": product_id,
             },
         )

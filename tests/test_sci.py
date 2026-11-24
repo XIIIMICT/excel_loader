@@ -34,7 +34,7 @@ def sci_source_path(tmp_path: Path) -> Path:
     return path
 
 
-def test_skips_rows_without_a_product_and_reads_past_aggregate_rows(
+def test_skips_rows_with_an_empty_date_product_or_price_and_reads_past_aggregate_rows(
     settings: Settings,
     sci_source_path: Path,
 ) -> None:
@@ -44,8 +44,12 @@ def test_skips_rows_without_a_product_and_reads_past_aggregate_rows(
     sheet["A11"], sheet["H11"], sheet["P11"] = date(2023, 1, 1), 11200, 110.5
     # A monthly aggregate row with a month name instead of a date.
     sheet["A12"], sheet["H12"], sheet["P12"] = "Февраль", 11800, 120.5
-    # A valid quote row after the aggregates: must still be read.
-    sheet["A13"], sheet["B13"], sheet["D13"], sheet["P13"] = date(2013, 8, 1), "SBR", 1488, 200.5
+    # A row with a product but no date.
+    sheet["B13"], sheet["D13"], sheet["P13"] = "SBR", 1488, 130.5
+    # A row with a product and a date but no CIF price.
+    sheet["A14"], sheet["B14"], sheet["D14"] = date(2015, 3, 1), "SBR", 1488
+    # A valid quote row after the incomplete ones: must still be read.
+    sheet["A15"], sheet["B15"], sheet["D15"], sheet["P15"] = date(2013, 8, 1), "SBR", 1488, 200.5
     workbook.save(sci_source_path)
 
     payload = sci.build_payload(settings, (sci_source_path,)).payload
@@ -54,10 +58,12 @@ def test_skips_rows_without_a_product_and_reads_past_aggregate_rows(
     assert [row["avg_price"] for row in payload.rows] == [100.5, 200.5]
 
 
-def test_fully_blank_row_ends_the_data_block(settings: Settings, sci_source_path: Path) -> None:
+def test_row_with_all_key_cells_blank_ends_the_data_block(settings: Settings, sci_source_path: Path) -> None:
     workbook = _new_sci_workbook()
     sheet = workbook.active
-    # Row 11 is fully empty -> stop. Row 12 has a product but must not be read.
+    # Row 11 has no date, product or CIF price, but other columns keep values
+    # -> stop. Row 12 has a valid quote but must not be read.
+    sheet["H11"], sheet["Q11"] = 11200, "totals"
     sheet["A12"], sheet["B12"], sheet["D12"], sheet["P12"] = date(2013, 8, 1), "SBR", 1488, 200.5
     workbook.save(sci_source_path)
 

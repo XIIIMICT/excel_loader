@@ -1,14 +1,8 @@
 # Alertmanager: маршрутизация и доставка писем.
 #
-# `to`/`from`/`smarthost` рендерятся НА СТАРТЕ КОНТЕЙНЕРА entrypoint.sh
-# (sed поверх этого файла) из .env: Alertmanager НЕ расширяет ${VAR} в этих
-# полях, а --setenv не помогает. После правки .env нужен перезапуск стека
-# (`just monitoring-stand`; `just monitoring` поднимает только Alloy).
-#
-# Почта идёт Alertmanager → локальный smtp-relay (25, приватная сеть compose)
-# → корпоративный SMTP (STARTTLS 587). `smtp_require_tls` выключен ТОЛЬКО для
-# первого хопа: relay не объявляет STARTTLS на 25, uplink relay всегда TLS.
-# ALERT_SMTP_USER должен совпадать с адресом отправителя (ALERT_SMTP_FROM).
+# `to`/`from`/`smarthost` рендерятся при старте контейнера entrypoint.sh из .env
+# (Alertmanager не расширяет ${VAR} в этих полях): после правки — `just monitoring-stand`.
+# Маршрут почты и причины smtp_require_tls: false — docs/ARCHITECTURE.md (canonical).
 
 global:
   resolve_timeout: 5m

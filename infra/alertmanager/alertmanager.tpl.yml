@@ -3,16 +3,17 @@
 # `to`/`from`/`smarthost` рендерятся НА СТАРТЕ КОНТЕЙНЕРА entrypoint.sh
 # (sed поверх этого файла) из .env: Alertmanager НЕ расширяет ${VAR} в этих
 # полях, а --setenv не помогает. После правки .env нужен перезапуск стека
-# (`just monitoring`).
+# (`just monitoring-stand`; `just monitoring` поднимает только Alloy).
 #
-# Два проверенных нюанса (ReportCollector, 2026-10-27, письмо прошло):
-# 1. smarthost обязан быть портом с STARTTLS (587): 465 — неявный TLS,
-#    `smtp_require_tls` с ним несовместим;
-# 2. ALERT_SMTP_USER должен совпадать с адресом отправителя (ALERT_SMTP_FROM).
+# Почта идёт Alertmanager → локальный smtp-relay (25, приватная сеть compose)
+# → корпоративный SMTP (STARTTLS 587). `smtp_require_tls` выключен ТОЛЬКО для
+# первого хопа: relay не объявляет STARTTLS на 25, uplink relay всегда TLS.
+# ALERT_SMTP_USER должен совпадать с адресом отправителя (ALERT_SMTP_FROM).
 
 global:
   resolve_timeout: 5m
-  smtp_require_tls: true
+  # Internal hop to our own relay is plain SMTP; the relay uses STARTTLS upstream.
+  smtp_require_tls: false
 
 route:
   receiver: support-mail

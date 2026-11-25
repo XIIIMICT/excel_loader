@@ -40,7 +40,8 @@ limits_config:
   # application logs accumulate on the volume). 7 days matches what the
   # dashboards ask for (compare today against last week) and is what the
   # rotated file logs can no longer hold.
-  retention_period: 168h
+  # Env-configurable default shared by all projects and the central DWH stack.
+  retention_period: ${LOKI_RETENTION:-168h}
 
 compactor:
   # The compactor is what actually ENFORCES `retention_period`; without it the

@@ -23,7 +23,11 @@ monitoring:
 
 # Запуск полного мониторингового стека в этом же compose
 monitoring-stand: monitoring
-    docker compose up -d loki grafana prometheus pushgateway alertmanager
+    docker compose up -d loki grafana prometheus pushgateway alertmanager smtp-relay
+
+# Локальная проверка дрейфа общих конфигов между тремя стеками и DWH
+drift-check:
+    python ../infra/check-drift.py
 
 # Остановка среды
 down:

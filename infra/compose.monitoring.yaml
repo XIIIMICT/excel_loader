@@ -32,7 +32,10 @@ services:
     container_name: el-loki
     image: grafana/loki:3.7
     restart: unless-stopped
-    command: ["-config.file=/etc/loki/config.yaml"]
+    # Expand ${LOKI_RETENTION} inside the config file (one shared default).
+    command: ["-config.file=/etc/loki/config.yaml", "-config.expand-env=true"]
+    environment:
+      LOKI_RETENTION: ${LOKI_RETENTION:-168h}
     volumes:
       - ./loki/config.yaml:/etc/loki/config.yaml:ro
       - loki-data:/loki
@@ -71,7 +74,7 @@ services:
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
-      - --storage.tsdb.retention.time=15d
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-15d}
       - --web.enable-lifecycle
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -79,6 +82,22 @@ services:
       - prometheus-data:/prometheus
     networks: [net]
     ports: ["9090:9090"]
+
+  # Local SMTP relay: Alertmanager talks plain SMTP to it inside the private
+  # compose network; the relay authenticates to the corporate SMTP with STARTTLS.
+  smtp-relay:
+    container_name: el-smtp-relay
+    image: juanluisbaptiste/postfix:1.11
+    restart: unless-stopped
+    environment:
+      # Empty/placeholder keeps the stack bootable when mail is not configured;
+      # set a real upstream in .env for delivery (documented in .env.example).
+      SMTP_SERVER: ${SMTP_RELAY_SERVER:-smtp.example.invalid}
+      SMTP_PORT: ${SMTP_RELAY_PORT:-587}
+      SMTP_USERNAME: ${SMTP_RELAY_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_RELAY_PASSWORD:-}
+      SERVER_HOSTNAME: ${SMTP_RELAY_HOSTNAME:-excel-loader-alerts}
+    networks: [net]
 
   alertmanager:
     container_name: el-alertmanager
@@ -90,6 +109,8 @@ services:
       ALERT_SMTP_USER: ${ALERT_SMTP_USER:-}
       ALERT_SMTP_PASSWORD: ${ALERT_SMTP_PASSWORD:-}
       SUPPORT_MAIL: ${SUPPORT_MAIL:-}
+    depends_on:
+      - smtp-relay
     volumes:
       - ./alertmanager:/etc/alertmanager:ro
       - alertmanager-data:/alertmanager

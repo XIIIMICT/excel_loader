@@ -1,6 +1,7 @@
-# Prometheus: ломаем три серии источников — Pushgateway (состояния запусков),
-# сам Prometheus (санити-серия up) и внешний Postgres-экспортёр — и вешаем правила.
-# Конфиг НЕ расширяет ${VAR} из compose — порты и имена сервисов фиксируются здесь.
+# Prometheus: Pushgateway (состояния пакетных запусков), сам Prometheus и
+# живость остального observability-стека (Loki/Alertmanager/Grafana).
+# Конфиг НЕ расширяет ${VAR} из compose — имена сервисов фиксируются здесь;
+# ретенция задаётся флагом контейнера из PROMETHEUS_RETENTION.
 #
 # Loader пушит в Pushgateway только при запуске (пакетный CLI): значения серии
 # сохраняются между запусками, поэтому прометеевский scrape забирает их каждые 15 s.
@@ -28,3 +29,15 @@ scrape_configs:
   - job_name: prometheus
     static_configs:
       - targets: ["localhost:9090"]
+
+  - job_name: loki
+    static_configs:
+      - targets: ["loki:3100"]
+
+  - job_name: alertmanager
+    static_configs:
+      - targets: ["alertmanager:9093"]
+
+  - job_name: grafana
+    static_configs:
+      - targets: ["grafana:3000"]

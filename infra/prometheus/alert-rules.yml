@@ -35,21 +35,47 @@ groups:
         annotations:
           summary: "Excel Loader: более 26 часов без полностью успешного запуска"
           description: "`el_loader_run_last_success_seconds` не обновился — все последние запуски с ошибками или не запусками."
-  - name: monitoring_stack
+  - name: excel_loader_monitoring_stack
+    # Unique project prefix: these rule files are also copied into the central
+    # DWH rules directory, where generic names would collide across projects.
     rules:
-      - alert: PushgatewayDown
+      - alert: ExcelLoaderPushgatewayDown
         expr: up{job="pushgateway"} == 0
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "Pushgateway недоступен"
-          description: "Loader пушит метрики в Pushgateway; без него о состоянии запусков не видно."
-      - alert: PrometheusSelfScrapeDown
+          summary: "Excel Loader: Pushgateway недоступен"
+          description: "Loader пушит метрики в Pushgateway; без него о состоянии запусков не видно. Дашборд «Excel Loader — Состояние загрузок», Prometheus → /alerts."
+      - alert: ExcelLoaderPrometheusSelfScrapeDown
         expr: up{job="prometheus"} == 0
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "Prometheus не слигивает себя"
-          description: "Санити-серия up — проверка живости самого коллектора."
+          summary: "Excel Loader: Prometheus не скрапит себя"
+          description: "Санити-серия up — проверка живости коллектора. Дашборд «Excel Loader — Состояние загрузок», Prometheus → /alerts."
+      - alert: ExcelLoaderLokiDown
+        expr: up{job="loki"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Excel Loader: Loki недоступен"
+          description: "Alloy некуда слать логи; приложение при этом продолжает работать. Смотрите дашборд «Excel Loader — Состояние загрузок» и Grafana → Explore."
+      - alert: ExcelLoaderAlertmanagerDown
+        expr: up{job="alertmanager"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Excel Loader: Alertmanager недоступен"
+          description: "Письма алертов не уйдут; сами алерты видны в Prometheus → /alerts."
+      - alert: ExcelLoaderGrafanaDown
+        expr: up{job="grafana"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Excel Loader: Grafana недоступна"
+          description: "Дашборд «Excel Loader — Состояние загрузок» недоступен; логи по-прежнему идут в Loki."

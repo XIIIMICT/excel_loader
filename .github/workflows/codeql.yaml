@@ -19,8 +19,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Free CodeQL code scanning requires a public repository. Query the GitHub API
+  # instead of trusting event payloads, so every trigger type (push, PR, manual,
+  # schedule) gets the same answer. A failed query fails the workflow rather than
+  # silently skipping analysis.
+  visibility:
+    name: Repository visibility
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      public: ${{ steps.check.outputs.public }}
+    steps:
+      - name: Check repository visibility
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          visibility="$(gh api "repos/$REPOSITORY" --jq .visibility)"
+          echo "Repository visibility: $visibility"
+          if [ "$visibility" = "public" ]; then
+            echo "public=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "public=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::CodeQL is skipped: free code scanning needs a public repository."
+          fi
+
   analyze:
     name: CodeQL (${{ matrix.language }})
+    needs: visibility
+    if: needs.visibility.outputs.public == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:

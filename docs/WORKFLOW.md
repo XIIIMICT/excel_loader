@@ -49,7 +49,7 @@ Write files as **UTF-8 without BOM**, line endings LF. prek (`mixed-line-ending 
   - `secrets` — gitleaks over the **full history** (`fetch-depth: 0`): a deleted secret is still in every clone. Findings are reported, not suppressed; a false positive is fixed in `.gitleaks.toml` with a reason.
   - `production` — build the `prod` image, smoke-check it (`python -m compileall src`), and export it as an artifact on version tags.
   - `required` — a gate job that fails unless every job above succeeded. Configure **CI required** as the required branch-protection check; there are no path filters that could leave it pending.
-- `codeql.yaml` — CodeQL security analysis for `python` and `actions` on pushes/PRs to `main`/`dev` plus a weekly scheduled scan (new queries only exist there).
+- `codeql.yaml` — CodeQL security analysis for `python` and `actions` on pushes/PRs to `main`/`dev` plus a weekly scheduled scan (new queries only exist there). A `visibility` job queries the GitHub API and runs the analysis **only for public repositories**: free CodeQL cannot upload results from a private one. The job is skipped, not downgraded; the API query itself must succeed.
 - `docker-release.yaml` — on `vMAJOR.MINOR.PATCH` tags: run `ci.yaml` via `workflow_call`, then publish the exact image that passed CI to GHCR (`ghcr.io/<owner>/excel_loader`, version and full commit SHA tags). Images are not rebuilt after tests.
 - `dependabot.yaml` — weekly updates for github-actions, docker, docker-compose, uv (patch versions are ignored).
 

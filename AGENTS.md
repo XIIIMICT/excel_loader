@@ -57,6 +57,7 @@ Default modules — all four. `--module <code>` (repeatable; codes: `quotes_nsi`
 
 - **Don't commit or push without an explicit request.** Before git operations — `git status` and the current branch.
 - **Before delivery:** `just check` and `just test` green. Fix `ruff`/`ty` errors in code; add ignores only when a fix would hurt readability or correctness.
+- **Hook policy (shared, maintainer decision 2026-11-25):** every static checker (ruff, ty, frontend lint/typecheck where present) runs on the **staged files** at commit and on the **whole tree** in CI. No `manual` stage: the old parallel-agent stashing rationale is superseded by this rule.
 - **uv TLS:** verify through the system certificate store (`UV_SYSTEM_CERTS=1`) — already set in the `justfile`. Don't bring back `UV_INSECURE_HOST`, don't disable SSL verification globally; the corporate CA is mounted from `/etc/ssl/certs`.
 - **Documentation is part of the change:** changed behavior/mapping/config — update `AGENTS.md` and the relevant file in `docs/`. Write landmines down immediately.
 - **Minimal changes:** follow the file's style, don't add new entities without need.

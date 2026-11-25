@@ -22,18 +22,19 @@ name = "ruff check"
 entry = "uv run ruff check --fix"
 language = "system"
 files = '\\.py$'
+require_serial = true
 
 [[repos.hooks]]
 id = "ty-check"
 name = "ty check"
-# `ty` — проектно-широкая проверка: импорты резолвятся по всему пакету,
-# сузить её до файла нельзя. prek при таком запуске застэшивает рабочее
-# дерево и ломает параллельных агентов, поэтому хук стал opt-in.
-# Он всё ещё обязателен в CI (`just typecheck`: ruff/format/ty, затем тесты).
+# Shared hook policy (maintainer decision, 2026-11-25): every checker runs on
+# the staged files at commit time and on the whole tree in CI. `ty` still
+# resolves imports across the project, but the diagnostics are limited to the
+# files being committed, so a parallel agent's work is never rewritten.
 entry = "uv run ty check"
 language = "system"
-stages = ["manual"]
-pass_filenames = false
+files = '\.py$'
+require_serial = true
 
 [[repos.hooks]]
 id = "uv-lock"

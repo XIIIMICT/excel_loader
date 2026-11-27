@@ -149,19 +149,43 @@ Errors and warnings must point at the real cell in the source workbook, not at a
 
 The loader is a batch CLI: it exits, so Prometheus cannot scrape it. When
 `METRICS_PUSHGATEWAY_URL` is set (empty default in `compose.yaml`), the run
-pushes (via `src/metrics.py`) gauges to the Pushgateway
-(`infra/compose.monitoring.yaml`): `el_loader_run_status`
-(0 success / 1 partial_success / 2 failure), `el_loader_run_duration_seconds`,
-`el_loader_run_timestamp_seconds`, `el_loader_run_last_success_seconds` (pushed
-only on success — the Pushgateway keeps the previous value, which is what makes
-"no successful run for N hours" detectable) and `el_loader_module_status{module}`
-(1 failed) for the selected modules. Each push replaces the previous series
-(single grouping key), Prometheus (15 s scrape, 15-day retention) keeps the run
+pushes (via `src/metrics.py`) the following series to the Pushgateway
+(`infra/compose.monitoring.yaml`) in one request:
+
+| Metric | Type | Labels | Value |
+|---|---|---|---|
+| `el_loader_run_status` | Gauge | — | 0 success / 1 partial_success / 2 failure |
+| `el_loader_run_duration_seconds` | Gauge | — | wall duration of the run |
+| `el_loader_run_timestamp_seconds` | Gauge | — | Unix time of the push |
+| `el_loader_run_last_success_seconds` | Gauge | — | Unix time of the last fully successful run; pushed only on success |
+| `el_loader_module_status` | Gauge | `module` | 1 failed, 0 success; only selected modules |
+| `el_loader_stage_duration_seconds` | Histogram | `module`, `stage` | per-stage durations; buckets 0.01/0.05/0.1/0.25/0.5/1/2.5/5/15/30/60/120/300 s +Inf |
+
+`el_loader_run_last_success_seconds` is pushed only on success — the
+Pushgateway keeps the previous value, which is what makes "no successful run
+for N hours" detectable. Each push replaces the previous series (single
+grouping key), Prometheus (15 s scrape, 15-day retention) keeps the run
 history. Push failures are logged ERROR and never change the exit code.
+
+**Stage durations** are collected in-process by `src/stage_metrics.py` and
+registered into the same per-run push registry — no second endpoint, env var
+or runtime dependency. Both labels are bounded: `module` is one of
+`MODULE_CODES` (`quotes_nsi`, `quotes`, `pd`, `sales_op`, the same set as
+`el_loader_module_status`) and `stage` is one of `parse`, `parse_sheet`,
+`validate`, `load`, `commit`. No file path, date, table or sheet name is a
+label. Stage meaning: `parse` — workbook(s) to in-memory rows; `parse_sheet` —
+one workbook/sheet inside that parse (PD reads the first sheet, sales_op
+parses one plan sheet per file; no sheet name label); `validate` — post-parse
+checks (dictionary table validation, sales_op file selection/date checks, PD
+metadata enrichment); `load` — SQL work inside the write transaction;
+`commit` — from the end of the SQL work to the exit of the transaction
+(history rows and commit). Because a bucket series is a Pushgateway snapshot,
+`histogram_quantile` over it describes the **last run only**, not a rolling
+baseline; `rate()` over these buckets is meaningless.
 
 ### Alerts and dashboards
 
-- `infra/prometheus/alert-rules.yml`: `ExcelLoaderRunFailed`, `ExcelLoaderLastRunTooOld`, `ExcelLoaderNoSuccessfulRun` (all thresholds assume **daily** runs, 26 h) plus the full stack-self set with an `ExcelLoader` prefix — `ExcelLoaderPushgatewayDown`, `ExcelLoaderPrometheusSelfScrapeDown`, `ExcelLoaderLokiDown`, `ExcelLoaderAlertmanagerDown`, `ExcelLoaderGrafanaDown`. The project prefix is load-bearing: every project's rule file is copied into the central DWH `rules/` directory, where generic names would collide. Annotations are Russian (operator-facing) and point to the dashboard and the id to correlate (`run_id`).
+- `infra/prometheus/alert-rules.yml`: `ExcelLoaderRunFailed`, `ExcelLoaderLastRunTooOld`, `ExcelLoaderNoSuccessfulRun` (all thresholds assume **daily** runs, 26 h), `ExcelLoaderStageP95Slow` (`histogram_quantile(0.95, …)` > 60 s for **10m**, warning; a slow *last run* because the histogram is a Pushgateway snapshot — raise the threshold if the regulated run legitimately takes longer), plus the full stack-self set with an `ExcelLoader` prefix — `ExcelLoaderPushgatewayDown`, `ExcelLoaderPrometheusSelfScrapeDown`, `ExcelLoaderLokiDown`, `ExcelLoaderAlertmanagerDown`, `ExcelLoaderGrafanaDown`. The project prefix is load-bearing: every project's rule file is copied into the central DWH `rules/` directory, where generic names would collide. Annotations are Russian (operator-facing) and point to the dashboard and the id to correlate (`run_id`).
 - **Mail delivery — canonical description for this repo;** the other docs and `.env.example` point here. Alertmanager (`infra/alertmanager/`, port 9093) groups them (30 s wait, 4 h repeat) and delivers e-mail. Its config is **rendered from `.env` at container start** — edit `ALERT_SMTP_*`/`SUPPORT_MAIL`, then restart with `just monitoring-stand`. **Documented deviation:** Alertmanager sends plain SMTP to the local `smtp-relay` (port 25, private compose network); the relay (`juanluisbaptiste/postfix:1.11`) authenticates to the corporate SMTP over STARTTLS 587 using `SMTP_RELAY_*`. Hence `smtp_require_tls: false` for the internal hop only; port 465 (implicit TLS) remains incompatible. `ALERT_SMTP_USER` must equal the sender mailbox.
-- Grafana (`infra/grafana/`): Loki datasource + Prometheus datasource + the provisioned dashboard `excel-loader-overview` (run status, duration, age of the last successful run, per-module statuses, warnings heatmap, warning/error log panel). Dashboards come from git — edit the JSON, not the browser.
+- Grafana (`infra/grafana/`): Loki datasource + Prometheus datasource + the provisioned dashboard `excel-loader-overview` (run status, duration, age of the last successful run, per-module statuses, warnings heatmap, warning/error log panel) plus two compact stage panels: p95 duration by `module`/`stage` (`histogram_quantile` over `el_loader_stage_duration_seconds_bucket`) and the per-stage observation count (`el_loader_stage_duration_seconds_count`). Dashboards come from git — edit the JSON, not the browser.
 - `just monitoring-stand` starts the whole observability stack (Loki + Grafana + Alloy + Prometheus + Pushgateway + Alertmanager); logs are collected via the same stack.

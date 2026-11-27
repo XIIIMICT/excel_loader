@@ -18,6 +18,7 @@ from source_resolver import (
     resolve_all_pattern_sources,
     resolve_source,
 )
+from stage_metrics import stage_timer
 from storage import prepare_storage
 
 if TYPE_CHECKING:
@@ -74,6 +75,7 @@ class _LoaderStrategy(Protocol):
 async def run_dictionaries(  # noqa: PLR0913
     settings: Settings,
     *,
+    module_code: str,
     module_label: str,
     module_config: ModuleConfig,
     dictionary_loaders: tuple[DictionaryLoader, ...],
@@ -104,6 +106,7 @@ async def run_dictionaries(  # noqa: PLR0913
         for strategy in strategies:
             table, had_warning = await _run_loader_strategy(
                 settings=settings,
+                module_code=module_code,
                 module_label=module_label,
                 module_config=module_config,
                 strategy=strategy,
@@ -129,6 +132,7 @@ async def run_dictionaries(  # noqa: PLR0913
 async def _run_loader_strategy(  # noqa: PLR0911, PLR0913
     *,
     settings: Settings,
+    module_code: str,
     module_label: str,
     module_config: ModuleConfig,
     strategy: _LoaderStrategy,
@@ -145,7 +149,8 @@ async def _run_loader_strategy(  # noqa: PLR0911, PLR0913
     ``(None, False)`` so the caller records it as an error.
     """
     try:
-        resolution = strategy.resolve(settings, module_label, module_config)
+        with stage_timer(module_code, "parse"):
+            resolution = strategy.resolve(settings, module_label, module_config)
     except SourceFileNotFoundError as error:
         LOGGER.warning(
             "%s: файл %s не найден, загрузка пропущена.",
@@ -183,6 +188,7 @@ async def _run_loader_strategy(  # noqa: PLR0911, PLR0913
         return None, True
 
     table = await _persist_payload(
+        module_code=module_code,
         module_label=module_label,
         module_config=module_config,
         resolution=resolution,
@@ -195,8 +201,9 @@ async def _run_loader_strategy(  # noqa: PLR0911, PLR0913
     return table, had_warning
 
 
-async def _persist_payload(
+async def _persist_payload(  # noqa: PLR0913
     *,
+    module_code: str,
     module_label: str,
     module_config: ModuleConfig,
     resolution: _LoaderResolution,
@@ -204,11 +211,12 @@ async def _persist_payload(
     history_table: Table,
 ) -> Table | None:
     payload = resolution.payload
-    table = build_dictionary_table(
-        table_reference=payload.table_reference,
-        columns=payload.columns,
-        primary_key_columns=payload.primary_key_columns,
-    )
+    with stage_timer(module_code, "validate"):
+        table = build_dictionary_table(
+            table_reference=payload.table_reference,
+            columns=payload.columns,
+            primary_key_columns=payload.primary_key_columns,
+        )
     try:
         storage = await inspect_storage(table, engine=engine)
         if storage.needs_seed:
@@ -219,6 +227,7 @@ async def _persist_payload(
             rows=payload.rows,
             history_table=history_table,
             history_entries=resolution.history_entries,
+            stage_module=module_code,
         )
     except BusinessLoadError as error:
         LOGGER.log(

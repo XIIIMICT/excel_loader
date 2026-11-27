@@ -1,3 +1,4 @@
+import time
 from datetime import date
 from typing import TYPE_CHECKING, Any
 
@@ -7,6 +8,7 @@ from sqlalchemy.exc import DBAPIError
 from business_errors import DatabaseOperationError
 from sales_op.specification import PLAN_DATE_COLUMN_NAME, source_table_name
 from schema_definition import build_dictionary_table, qualified_table_name, quote_identifier
+from stage_metrics import observe_stage
 from storage import ensure_additive_table_structure
 
 if TYPE_CHECKING:
@@ -66,6 +68,7 @@ async def replace_month_rows(  # noqa: PLR0913
     rows: Sequence[DbRow],
     history_table: Table | None = None,
     history_entries: Sequence[SourceHistoryEntry] = (),
+    stage_module: str | None = None,
 ) -> int:
     """
     Replace the rows of one month in a single transaction.
@@ -76,6 +79,7 @@ async def replace_month_rows(  # noqa: PLR0913
     existing table is never truncated, dropped or rewritten structurally.
     """
     next_month_start = _next_month_start(month_start)
+    stage_started_at = time.monotonic()
     try:
         async with engine.begin() as connection:
             await ensure_additive_table_structure(connection, table)
@@ -103,6 +107,10 @@ async def replace_month_rows(  # noqa: PLR0913
                         for entry in history_entries
                     ],
                 )
+            if stage_module is not None:
+                observe_stage(stage_module, "load", time.monotonic() - stage_started_at)
+        if stage_module is not None:
+            observe_stage(stage_module, "commit", time.monotonic() - stage_started_at)
     except DBAPIError as error:
         raise DatabaseOperationError.from_dbapi_error(
             error,

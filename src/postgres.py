@@ -1,3 +1,4 @@
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -6,6 +7,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from business_errors import DatabaseOperationError, DuplicatePrimaryKeyError
 from schema_definition import primary_key_columns, qualified_table_name, quote_identifier, split_table_reference
+from stage_metrics import observe_stage
 from storage import (
     POSTGRES_ROLE_EXISTS_SQL,
     align_table_structure,
@@ -67,14 +69,16 @@ async def inspect_storage(
     )
 
 
-async def replace_table_rows(
+async def replace_table_rows(  # noqa: PLR0913
     engine: AsyncEngine,
     table: Table,
     *,
     rows: Sequence[DbRow],
     history_table: Table | None = None,
     history_entries: Sequence[SourceHistoryEntry] = (),
+    stage_module: str | None = None,
 ) -> int:
+    stage_started_at = time.monotonic()
     try:
         async with engine.begin() as connection:
             await connection.execute(text(f"TRUNCATE TABLE {qualified_table_name(table)}"))
@@ -96,6 +100,10 @@ async def replace_table_rows(
                         for entry in history_entries
                     ],
                 )
+            if stage_module is not None:
+                observe_stage(stage_module, "load", time.monotonic() - stage_started_at)
+        if stage_module is not None:
+            observe_stage(stage_module, "commit", time.monotonic() - stage_started_at)
     except IntegrityError as error:
         primary_key_constraint = table.primary_key.name
         if isinstance(primary_key_constraint, str) and primary_key_constraint in str(error):

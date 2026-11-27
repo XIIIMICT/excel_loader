@@ -16,6 +16,7 @@ from pd.schema import build_pd_tables, pd_view_reference
 from pd.unsent import delete_unloaded_report, load_unloaded_reports, save_unloaded_report
 from source_history import prepare_source_history
 from source_resolver import SourceAuthError, SourceError, SourceFile, resolve_pattern_sources
+from stage_metrics import stage_timer
 
 if TYPE_CHECKING:
     from sqlalchemy import Table
@@ -87,15 +88,19 @@ async def _process_source_file(
     loaded_at = datetime.now(tz=settings.app_timezone)
     try:
         LOGGER.info("PD: выбран источник %s.", source_file.display_name)
-        report = parse_report(source_file.path, loaded_at=loaded_at)
-        metadata = read_workbook_metadata(source_file.path, timezone=settings.app_timezone)
-        report = replace(
-            report,
-            source_name=source_file.display_name,
-            history_reference=source_file.history_reference,
-            file_modified_at=metadata.file_modified_at,
-            file_modifier=metadata.file_modifier,
-        )
+        # PD reads only the first sheet of the workbook, so one source file is
+        # one sheet-level observation (no sheet name is used as a label).
+        with stage_timer("pd", "parse"), stage_timer("pd", "parse_sheet"):
+            report = parse_report(source_file.path, loaded_at=loaded_at)
+        with stage_timer("pd", "validate"):
+            metadata = read_workbook_metadata(source_file.path, timezone=settings.app_timezone)
+            report = replace(
+                report,
+                source_name=source_file.display_name,
+                history_reference=source_file.history_reference,
+                file_modified_at=metadata.file_modified_at,
+                file_modifier=metadata.file_modifier,
+            )
         _log_report_summary(report.source_name, report)
         return await _load_or_save_report(settings, engine, report, history_table=history_table)
     except FileNotFoundError:
@@ -129,6 +134,7 @@ async def _process_unloaded_reports(
                 report,
                 history_table=history_table,
                 history_entry=_source_history_entry(settings, report),
+                stage_module="pd",
             )
         except Exception as error:
             if _is_database_unavailable(error):
@@ -168,6 +174,7 @@ async def _load_or_save_report(
             report,
             history_table=history_table,
             history_entry=_source_history_entry(settings, report),
+            stage_module="pd",
         )
     except Exception as error:
         if not _is_database_unavailable(error):

@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 from prometheus_client.exposition import generate_latest
 
 from metrics import METRICS_GATEWAY_ENV, build_run_metrics, push_run_metrics
+from stage_metrics import observe_stage
 
 if TYPE_CHECKING:
     import pytest
@@ -67,6 +68,22 @@ def test_push_failure_state_has_no_last_success_and_module_failure(
     assert "el_loader_run_status 2" in payload
     assert "el_loader_run_last_success_seconds" not in payload
     assert 'el_loader_module_status{module="pd"} 1' in payload
+
+
+def test_push_includes_stage_duration_histogram(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(METRICS_GATEWAY_ENV, "http://pushgateway:9091")
+    observe_stage("pd", "validate", 0.42)
+    with unittest.mock.patch("metrics.push_to_gateway") as push_mock:
+        push_run_metrics(build_run_metrics("success", duration_seconds=1.0, module_codes=["pd"], failed_modules=[]))
+    payload = generate_latest(push_mock.call_args.kwargs["registry"]).decode()
+    assert "# TYPE el_loader_stage_duration_seconds histogram" in payload
+    bucket_line = next(
+        line
+        for line in payload.splitlines()
+        if line.startswith('el_loader_stage_duration_seconds_bucket{le="0.5",module="pd",stage="validate"}')
+    )
+    assert float(bucket_line.rsplit(" ", 1)[1]) >= 1
+    assert 'el_loader_stage_duration_seconds_count{module="pd",stage="validate"}' in payload
 
 
 def test_push_failure_delivery_is_contained(monkeypatch: pytest.MonkeyPatch) -> None:

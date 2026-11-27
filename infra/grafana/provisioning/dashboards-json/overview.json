@@ -131,6 +131,41 @@
         { "refId": "A", "expr": "{job=\"excel_loader\"} | level=~\"WARNING|ERROR|CRITICAL\"", "queryType": "range" }
       ],
       "options": { "sortOrder": "Descending", "wrapLogMessage": true }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Стадии загрузки: p95 за последний запуск",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 27 },
+      "datasource": { "type": "prometheus", "uid": "excel-loader-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.95, sum by (le, module, stage) (el_loader_stage_duration_seconds_bucket))", "legendFormat": "{{module}} / {{stage}}" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 2,
+          "custom": { "stepAfter": null, "_drawStyle": "line", "lineInterpolation": "linear", "fillOpacity": 10 }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Стадии загрузки: операций за запуск",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 27 },
+      "datasource": { "type": "prometheus", "uid": "excel-loader-prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "sum by (module, stage) (el_loader_stage_duration_seconds_count)", "legendFormat": "{{module}} / {{stage}}" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "stepAfter": null, "_drawStyle": "bars", "fillOpacity": 50 }
+        },
+        "overrides": []
+      }
     }
   ]
 }

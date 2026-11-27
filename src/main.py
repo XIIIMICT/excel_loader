@@ -276,6 +276,7 @@ async def _run_modules(
 async def _run_quotes_nsi(settings: Settings) -> ModuleOutcome:
     return await run_dictionaries(
         settings,
+        module_code="quotes_nsi",
         module_label="НСИ котировок",
         module_config=settings.modules["quotes_nsi"],
         dictionary_loaders=QUOTES_NSI_DICTIONARIES,
@@ -285,6 +286,7 @@ async def _run_quotes_nsi(settings: Settings) -> ModuleOutcome:
 async def _run_quotes(settings: Settings) -> ModuleOutcome:
     return await run_dictionaries(
         settings,
+        module_code="quotes",
         module_label="Котировки",
         module_config=settings.modules["quotes"],
         dictionary_loaders=QUOTES_DICTIONARIES,

@@ -188,3 +188,21 @@ One PostgreSQL instance is defined in EL's compose (`compose.yaml:1-4` includes
 `Get-ChildItem -Force` on repo root, `docs/`, `.github/workflows/`, `tests/`;
 plus direct reads of every file cited above. No destructive commands, no data
 changes, no `gh api` calls, no commits, no pushes.
+
+## Addendum: P0-4 remediation finding (2026-11-27, branch `fix/pg-smoke-and-meaningful-tests`)
+
+The research above frames the coverage question; the decision taken on it is
+now recorded in `docs/WORKFLOW.md`. Short finding: the 57.70% baseline was not
+a reason to add `--cov-fail-under=80` (a percentage target the maintainer
+explicitly rejected). The measurable blind spot was `src/pd/excel_parser.py`
+(~15% covered, zero PD tests) and `src/pd/unsent.py` (27%); DB/SQL code was
+better served by a real-PostgreSQL smoke test than by more unit tests.
+After adding meaningful tests (PD parser/round-trip, local source resolution,
+sales_op runner edges) the measured coverage is **67.76%** (271 passed, 1
+skipped; `-m "not integration"`), i.e. **57.70% → 67.76%**. `fail_under` was
+ratcheted 40 → 65 with headroom; no `--cov-fail-under` flag and no 80 gate.
+The new `postgres-smoke` CI job (health-checked `postgres:18-alpine`,
+`TEST_DATABASE_URL`, disposable `el`/`el_smoke` schemas, two real loader runs)
+completes in ~4 s locally, so it stayed in per-PR CI with a 3-minute timeout
+instead of moving to a nightly job. This addendum is the only change to the
+read-only research deliverable; the findings above are unchanged. **[M]**

@@ -1,0 +1,168 @@
+name: Nightly
+
+# Heavy checks run off the per-PR path. Branch protection requires only
+# "CI required" from ci.yaml; no job below is a required status check.
+on:
+  schedule:
+    # Daily 03:47 UTC — off-peak and clear of the weekly CodeQL slot (03:23).
+    - cron: "47 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  full-coverage:
+    name: Full coverage (unit + PostgreSQL smoke)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: strong_password
+          POSTGRES_DB: dwh
+        ports:
+          - 127.0.0.1:15432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d dwh"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql+asyncpg://postgres:strong_password@127.0.0.1:15432/dwh
+      TEST_SCHEMA: el_smoke
+      COVERAGE_FILE: coverage-data
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          python-version: "3.15"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --locked
+      - name: Run the full suite with branch coverage
+        # No -m filter: the integration-marked PostgreSQL smoke job runs here.
+        run: >-
+          uv run --no-sync pytest -q
+          --cov=src --cov-branch --cov-report=term --cov-report=xml:coverage.xml
+          --junitxml=test-results.xml --durations=10
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: nightly-test-reports
+          path: |
+            coverage.xml
+            test-results.xml
+          retention-days: 14
+
+  security:
+    name: Security (pip-audit, report-only)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          python-version: "3.15"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Export the locked runtime environment
+        run: >-
+          uv export --locked --no-dev --no-emit-project --no-hashes
+          --format requirements.txt --output-file locked-requirements.txt
+      # Day-one policy is report-only: findings and tool errors are captured as
+      # artifacts, never as a new red gate. Promoting this to a failing check is
+      # a separate decision that requires triaging the baseline first.
+      - name: Audit locked dependencies (report-only)
+        shell: bash
+        run: |
+          set +e
+          uvx --from pip-audit pip-audit \
+            --requirement locked-requirements.txt \
+            --no-deps \
+            --format json \
+            --output pip-audit.json \
+            --progress-spinner off \
+            --timeout 30
+          status=$?
+          set -e
+          printf '%s\n' "$status" > pip-audit.exit
+          echo "pip-audit exit status: $status (report-only; not a nightly gate)"
+      - name: Summarize the report-only result
+        shell: bash
+        run: |
+          status="$(cat pip-audit.exit)"
+          {
+            echo "### pip-audit (report-only)"
+            echo "Exit status: \`$status\`. Findings and tool errors do not fail the nightly."
+            echo "Report: artifact nightly-security-reports."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: nightly-security-reports
+          path: |
+            locked-requirements.txt
+            pip-audit.json
+            pip-audit.exit
+          if-no-files-found: warn
+          retention-days: 14
+
+  dependency-freshness:
+    name: Dependency freshness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          python-version: "3.15"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --locked
+      - name: Report outdated locked packages
+        shell: bash
+        run: uv pip list --outdated --format json > dependency-freshness.json
+      - name: Summarize freshness
+        shell: bash
+        run: |
+          count="$(jq 'length' dependency-freshness.json)"
+          {
+            echo "### Dependency freshness"
+            echo "Outdated packages in the locked environment: $count"
+            echo "Full list: artifact nightly-dependency-freshness."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: nightly-dependency-freshness
+          path: dependency-freshness.json
+          retention-days: 14
+
+  production-image:
+    name: Production image smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Build production image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: prod
+          load: true
+          tags: excel-loader:nightly
+          # A separate cache scope keeps nightly builds from touching per-PR CI.
+          cache-from: type=gha,scope=excel-loader-nightly
+          cache-to: type=gha,mode=max,scope=excel-loader-nightly
+      - name: Compile-check the production source
+        run: docker run --rm --entrypoint python excel-loader:nightly -m compileall -q src
+      - name: Check the CLI help entrypoint
+        run: docker run --rm --entrypoint python excel-loader:nightly src/main.py --help

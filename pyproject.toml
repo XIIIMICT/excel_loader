@@ -55,6 +55,9 @@ indent-style = "space"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "integration: exercises a real PostgreSQL service (requires TEST_DATABASE_URL)",
+]
 filterwarnings = [
     "error",
     "ignore::DeprecationWarning",
@@ -69,7 +72,10 @@ relative_files = true
 omit = ["src/scripts/*"]
 
 [tool.coverage.report]
-# Regression floor, not a target — kept at 40 so a future module does not
-# fail the suite on arrival; add tests where behavior warrants them.
-fail_under = 40
+# Regression floor, not a target. Raised to 65 after P0-4 added meaningful PD
+# parser/unsent, source-resolver and sales_op edge tests (measured 57.70% ->
+# 67.76%); DB/SQL paths are exercised by the real-PostgreSQL smoke job instead
+# of being chased with unit tests. Headroom is deliberate: no --cov-fail-under
+# and never 80 — coverage is a guard, not the goal.
+fail_under = 65
 exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:"]

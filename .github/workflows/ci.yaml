@@ -63,9 +63,10 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
       - run: uv sync --locked
-      - name: Run tests with coverage
+      - name: Run unit tests with coverage
+        # PostgreSQL-backed smoke tests run in the separate `postgres-smoke` job.
         run: >-
-          uv run --no-sync pytest -q
+          uv run --no-sync pytest -q -m "not integration"
           --cov=src --cov-branch --cov-report=term --cov-report=xml:coverage.xml
           --junitxml=test-results.xml --durations=10
       - uses: actions/upload-artifact@v7
@@ -76,6 +77,38 @@ jobs:
             coverage.xml
             test-results.xml
           retention-days: 7
+
+  postgres-smoke:
+    name: PostgreSQL smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: strong_password
+          POSTGRES_DB: dwh
+        ports:
+          - 127.0.0.1:15432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d dwh"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql+asyncpg://postgres:strong_password@127.0.0.1:15432/dwh
+      TEST_SCHEMA: el_smoke
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          python-version: "3.15"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --locked
+      - name: Run end-to-end smoke test against PostgreSQL
+        run: uv run --no-sync pytest -q -m integration tests/test_postgres_smoke.py --durations=10
 
   dependencies:
     name: Dependency review
@@ -153,7 +186,7 @@ jobs:
   required:
     name: CI required
     if: always()
-    needs: [config, quality, tests, dependencies, secrets, production]
+    needs: [config, quality, tests, postgres-smoke, dependencies, secrets, production]
     runs-on: ubuntu-24.04
     timeout-minutes: 1
     steps:

@@ -20,6 +20,13 @@ Pushed series (all gauges):
 - ``el_loader_module_status{module}`` — 1 when the module failed, 0 when it
   succeeded. Only selected modules are pushed, so stale statuses of
   unselected modules stay untouched at the Pushgateway.
+
+One histogram is pushed in the same request:
+
+- ``el_loader_stage_duration_seconds{module,stage}`` — per-stage durations
+  (``parse``, ``parse_sheet``, ``validate``, ``load``, ``commit``) collected
+  in-process by ``stage_metrics``. The Pushgateway keeps the last run's
+  buckets, so ``histogram_quantile`` on them describes the last run only.
 """
 
 import os
@@ -30,6 +37,7 @@ from typing import TYPE_CHECKING
 from prometheus_client import CollectorRegistry, Gauge, push_to_gateway
 
 from app_logging import get_logger
+from stage_metrics import STAGE_DURATION_HISTOGRAM
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -106,6 +114,10 @@ def push_run_metrics(run_metrics: RunMetrics) -> None:
     )
     for module_code in run_metrics.module_codes:
         module_gauge.labels(module=module_code).set(1 if module_code in run_metrics.failed_modules else 0)
+
+    # Stage buckets live in a private in-process registry; add the collector to
+    # the fresh per-run registry so one push delivers gauges and histogram.
+    registry.register(STAGE_DURATION_HISTOGRAM)
 
     try:
         push_to_gateway(

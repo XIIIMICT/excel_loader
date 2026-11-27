@@ -16,6 +16,7 @@ from sales_op.models import SalesOpError, SalesOpRunOptions, SelectedSalesOpFile
 from sales_op.specification import SPECIFICATION_FILE_NAME, read_sales_op_specification, source_table_name
 from source_history import prepare_source_history
 from source_resolver import SourceError, resolve_all_pattern_sources
+from stage_metrics import stage_timer
 from storage import prepare_storage
 
 if TYPE_CHECKING:
@@ -122,16 +123,18 @@ async def run_sales_op(settings: Settings, *, options: SalesOpRunOptions) -> Mod
         LOGGER.log(40, "План продаж не загружен. Причина: %s.", error)
         return _sales_op_outcome(has_errors=True, loaded_tables=(), view_reference=None, has_warnings=False)
 
-    selection = _select_source_files(
-        month_files,
-        specification_sources=specification.sources,
-        timezone=settings.app_timezone,
-    )
-    parsed = _parse_selected_files(
-        selection.files_by_group,
-        failed_groups=selection.failed_groups,
-        specification_sources=specification.sources,
-    )
+    with stage_timer("sales_op", "validate"):
+        selection = _select_source_files(
+            month_files,
+            specification_sources=specification.sources,
+            timezone=settings.app_timezone,
+        )
+    with stage_timer("sales_op", "parse"):
+        parsed = _parse_selected_files(
+            selection.files_by_group,
+            failed_groups=selection.failed_groups,
+            specification_sources=specification.sources,
+        )
 
     async with postgres_session(settings) as engine:
         loaded_groups, loaded_tables, storage_failures = await _replace_tables(
@@ -436,10 +439,13 @@ def _parse_selected_files(
         group_failed = False
         for selected_file in files_by_group[group_key]:
             try:
-                parsed = parse_sales_op_workbook(
-                    selected_file.path,
-                    source_specification=source_specification,
-                )
+                # One parsed workbook is one plan sheet; the sheet name stays
+                # out of the labels to keep the metric cardinality bounded.
+                with stage_timer("sales_op", "parse_sheet"):
+                    parsed = parse_sales_op_workbook(
+                        selected_file.path,
+                        source_specification=source_specification,
+                    )
             except Exception:
                 failures += 1
                 group_failed = True
@@ -533,6 +539,7 @@ async def _replace_tables(
                 rows=rows_by_group[group_key],
                 history_table=history_table,
                 history_entries=entries,
+                stage_module="sales_op",
             )
         except BusinessLoadError as error:
             failures += 1

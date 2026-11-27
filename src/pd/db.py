@@ -1,4 +1,5 @@
 import hashlib
+import time
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING, cast
@@ -11,6 +12,7 @@ from sqlalchemy.schema import CreateSchema
 
 from pd.schema import PdTables, build_pd_tables, pd_view_reference
 from schema_definition import qualified_table_name, quote_identifier
+from stage_metrics import observe_stage
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
@@ -57,15 +59,17 @@ class ViewBuildResult:
     error_message: str | None
 
 
-async def load_report_to_db(
+async def load_report_to_db(  # noqa: PLR0913
     settings: Settings,
     engine: AsyncEngine,
     report: ParsedReport,
     *,
     history_table: Table | None = None,
     history_entry: SourceHistoryEntry | None = None,
+    stage_module: str | None = None,
 ) -> PdLoadResult:
     tables = build_pd_tables(settings)
+    stage_started_at = time.monotonic()
     async with engine.begin() as connection:
         await _ensure_pd_storage(connection, tables, role_names=settings.modules["pd"].users_to_grant)
         reference_ids, changes = await _resolve_report_references(connection, tables, report)
@@ -96,6 +100,10 @@ async def load_report_to_db(
             view_result.view_name,
             role_names=settings.modules["pd"].users_to_grant,
         )
+        if stage_module is not None:
+            observe_stage(stage_module, "load", time.monotonic() - stage_started_at)
+    if stage_module is not None:
+        observe_stage(stage_module, "commit", time.monotonic() - stage_started_at)
 
     return PdLoadResult(
         deleted_rows=deleted_rows,

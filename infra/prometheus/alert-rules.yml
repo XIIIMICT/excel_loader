@@ -35,6 +35,16 @@ groups:
         annotations:
           summary: "Excel Loader: более 26 часов без полностью успешного запуска"
           description: "`el_loader_run_last_success_seconds` не обновился — все последние запуски с ошибками или не запусками."
+      - alert: ExcelLoaderStageP95Slow
+        # Pushgateway keeps the last run's buckets; this is a slow *last run*,
+        # not a rolling baseline. Threshold assumes the usual daily batch.
+        expr: histogram_quantile(0.95, sum by (le, module, stage) (el_loader_stage_duration_seconds_bucket)) > 60
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Excel Loader: стадия загрузки дольше 60 с (p95)"
+          description: "`el_loader_stage_duration_seconds` p95 > 60 s у {{ $labels.module }}/{{ $labels.stage }} в последнем запуске. Порог поднимите, если регламентный прогон занимает больше минуты."
   - name: excel_loader_monitoring_stack
     # Unique project prefix: these rule files are also copied into the central
     # DWH rules directory, where generic names would collide across projects.

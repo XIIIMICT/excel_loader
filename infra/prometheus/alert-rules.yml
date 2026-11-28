@@ -1,9 +1,13 @@
 # Алерты Excel Loader. Правила НЕ вимают POSTGRES/ведомственные —
 # только состояния запусков loader и живость наблюдательного стека.
 #
-# Loader — пакетный CLI: эл_loader_run_status остаётся последним значением
-# между запусками, а el_loader_run_last_success_seconds обновляется только
-# успешным запуском — по нему ловим «запуски не происходят вообще».
+# Loader — пакетный CLI: el_loader_run_status остаётся последним значением
+# между запусками (группа run). el_loader_run_last_success_seconds живёт в
+# отдельной группе last_success и обновляется только успешным запуском —
+# pushadd (POST) не заменяет её при ошибке. el_loader_run_success_seen —
+# явный флаг «успех когда-либо был»: absence этой серии означает, что
+# успешных запусков не было никогда. Группы разделены по instance, поэтому
+# алерты агрегируют метрики по хостам (max).
 #
 # Расписание запусков в месте эксплуатации знаете вы: порог 26 h ниже
 # рассчитан на ежедневный запуск — при другой частоте поднимите его.
@@ -12,7 +16,7 @@ groups:
   - name: excel_loader_runs
     rules:
       - alert: ExcelLoaderRunFailed
-        expr: el_loader_run_status >= 1
+        expr: max by (instance) (el_loader_run_status) >= 1
         for: 5m
         labels:
           severity: critical
@@ -20,7 +24,7 @@ groups:
           summary: "Excel Loader: последний запуск с ошибками"
           description: "`el_loader_run_status` = {{ $value }} (0 success, 1 partial_success, 2 failure)."
       - alert: ExcelLoaderLastRunTooOld
-        expr: time() - el_loader_run_timestamp_seconds > 93600
+        expr: time() - max(el_loader_run_timestamp_seconds) > 93600
         for: 10m
         labels:
           severity: warning
@@ -28,7 +32,9 @@ groups:
           summary: "Excel Loader: запуски более 26 часов назад не было"
           description: "Порог 26 h рассчитан на ежедневный запуск; скорректируйте при другой частоте."
       - alert: ExcelLoaderNoSuccessfulRun
-        expr: time() - el_loader_run_last_success_seconds > 93600
+        # A failed run never touches this group (pushadd), so success_seen
+        # stays 1 once set; missing series means there was never a success.
+        expr: (el_loader_run_success_seen < 1 or absent(el_loader_run_success_seen)) or time() - max(el_loader_run_last_success_seconds) > 93600
         for: 10m
         labels:
           severity: critical

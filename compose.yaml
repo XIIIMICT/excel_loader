@@ -32,6 +32,8 @@ services:
       # Пакетный запуск не имеет /metrics: состояние запуска уходит в Pushgateway.
       # Пусто по умолчанию: push метрик включается, когда METRICS_PUSHGATEWAY_URL задана в .env.
       METRICS_PUSHGATEWAY_URL: ${METRICS_PUSHGATEWAY_URL:-}
+      # Разделяет группы метрик при одновременных запусках/нескольких хостах.
+      METRICS_INSTANCE: ${METRICS_INSTANCE:-}
 
 networks:
   net:

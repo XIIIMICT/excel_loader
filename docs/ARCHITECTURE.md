@@ -149,23 +149,37 @@ Errors and warnings must point at the real cell in the source workbook, not at a
 
 The loader is a batch CLI: it exits, so Prometheus cannot scrape it. When
 `METRICS_PUSHGATEWAY_URL` is set (empty default in `compose.yaml`), the run
-pushes (via `src/metrics.py`) the following series to the Pushgateway
-(`infra/compose.monitoring.yaml`) in one request:
+pushes the following series to the Pushgateway (`infra/compose.monitoring.yaml`).
+A Pushgateway group is the unit of replacement: PUT replaces the whole group,
+POST (`pushadd`) updates only the series it carries. The families therefore
+live in three groups (`group` label in the grouping key, `instance` from
+`METRICS_INSTANCE` or the host name):
 
-| Metric | Type | Labels | Value |
-|---|---|---|---|
-| `el_loader_run_status` | Gauge | — | 0 success / 1 partial_success / 2 failure |
-| `el_loader_run_duration_seconds` | Gauge | — | wall duration of the run |
-| `el_loader_run_timestamp_seconds` | Gauge | — | Unix time of the push |
-| `el_loader_run_last_success_seconds` | Gauge | — | Unix time of the last fully successful run; pushed only on success |
-| `el_loader_module_status` | Gauge | `module` | 1 failed, 0 success; only selected modules |
-| `el_loader_stage_duration_seconds` | Histogram | `module`, `stage` | per-stage durations; buckets 0.01/0.05/0.1/0.25/0.5/1/2.5/5/15/30/60/120/300 s +Inf |
+| Group | Method | Metric | Type | Labels | Value |
+|---|---|---|---|---|---|
+| `run` | PUT every run | `el_loader_run_status` | Gauge | — | 0 success / 1 partial_success / 2 failure |
+| `run` | PUT every run | `el_loader_run_duration_seconds` | Gauge | — | wall duration of the run |
+| `run` | PUT every run | `el_loader_run_timestamp_seconds` | Gauge | — | Unix time of the push |
+| `run` | PUT every run | `el_loader_stage_duration_seconds` | Histogram | `module`, `stage` | per-stage durations; buckets 0.01/0.05/0.1/0.25/0.5/1/2.5/5/15/30/60/120/300 s +Inf |
+| `modules` | POST every run | `el_loader_module_status` | Gauge | `module` | 1 failed, 0 success; only selected modules |
+| `last_success` | POST on full success | `el_loader_run_last_success_seconds` | Gauge | — | Unix time of the last fully successful run |
+| `last_success` | POST on full success | `el_loader_run_success_seen` | Gauge | — | 1 once a full success has been pushed |
 
-`el_loader_run_last_success_seconds` is pushed only on success — the
-Pushgateway keeps the previous value, which is what makes "no successful run
-for N hours" detectable. Each push replaces the previous series (single
-grouping key), Prometheus (15 s scrape, 15-day retention) keeps the run
-history. Push failures are logged ERROR and never change the exit code.
+**Why three groups:** a failed run must not erase the last successful run or
+the statuses of modules that did not run this time. `push_to_gateway` (PUT) is
+used only for the run snapshot — it also removes stale stage buckets; the
+other two groups use `pushadd_to_gateway` (POST), so their series survive
+partial updates. `el_loader_run_success_seen` is the explicitly checkable flag
+for "no successful run ever" — the alert fires when it is missing or when the
+last success is older than 26 h. `METRICS_INSTANCE` isolates concurrent runs
+and hosts: groups with different instance values never overwrite each other;
+alerts and dashboards aggregate hosts with `max`. No unbounded label values
+are introduced: `module` is one of `MODULE_CODES`, `stage` one of `STAGES`,
+`instance` is set by the operator.
+
+Each push replaces or updates its group at the Pushgateway; Prometheus (15 s
+scrape, 15-day retention) keeps the run history. Push failures are logged ERROR
+and never change the exit code.
 
 **Stage durations** are collected in-process by `src/stage_metrics.py` and
 registered into the same per-run push registry — no second endpoint, env var
